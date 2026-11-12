@@ -14,6 +14,7 @@ import {
   Clock,
   Sparkles,
   ArrowRight,
+  ChevronLeft,
   X,
   Download,
   Share2,
@@ -41,7 +42,7 @@ const triggerHaptic = (duration = 15) => {
 };
 
 export default function App() {
-  // Aba ativa da Tab Bar nativa
+  // Aba ativa da Tab Bar nativa: 'script' | 'record' | 'settings'
   const [activeTab, setActiveTab] = useState<'script' | 'record' | 'settings'>('script');
 
   // Estado do Roteiro
@@ -74,14 +75,14 @@ export default function App() {
   const [showExportSheet, setShowExportSheet] = useState<boolean>(false);
   const [showQuickSettingsSheet, setShowQuickSettingsSheet] = useState<boolean>(false);
 
-  // Elementos e referências
+  // Referências
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const recordingTimerRef = useRef<any>(null);
 
-  // Salvar no localStorage
+  // Persistência local
   useEffect(() => {
     localStorage.setItem('teleprompter_script', script);
   }, [script]);
@@ -101,7 +102,7 @@ export default function App() {
   }, [script]);
 
   // ==============================================================
-  // GERENCIAMENTO DA CÂMERA (Compatível com iOS Safari)
+  // GERENCIAMENTO DA CÂMERA (iOS Safari Compatível)
   // ==============================================================
   const initCamera = useCallback(
     async (facing?: 'user' | 'environment') => {
@@ -109,7 +110,7 @@ export default function App() {
       setCameraLoading(true);
       setCameraError(null);
 
-      // Parar faixas antigas se houver
+      // Parar stream anterior se existir
       if (cameraStream) {
         cameraStream.getTracks().forEach((track) => track.stop());
       }
@@ -117,7 +118,6 @@ export default function App() {
       try {
         let stream: MediaStream;
         try {
-          // Tentativa principal: vídeo + áudio
           stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: mode,
@@ -128,7 +128,6 @@ export default function App() {
           });
         } catch (audioErr) {
           console.warn('Falha com áudio, tentando apenas vídeo:', audioErr);
-          // Fallback seguro: só vídeo se o mic estiver bloqueado
           stream = await navigator.mediaDevices.getUserMedia({
             video: { facingMode: mode },
             audio: false,
@@ -137,13 +136,12 @@ export default function App() {
 
         setCameraStream(stream);
 
-        // Atribuir ao elemento de vídeo
         if (videoPreviewRef.current) {
           videoPreviewRef.current.srcObject = stream;
           try {
             await videoPreviewRef.current.play();
           } catch (playErr) {
-            console.warn('AutoPlay aguardando interação:', playErr);
+            console.warn('Play da câmera aguardando interação:', playErr);
           }
         }
       } catch (err: any) {
@@ -158,7 +156,7 @@ export default function App() {
     [cameraStream, settings.cameraFacing, settings.audioEnabled]
   );
 
-  // Vincular stream quando o ref estiver montado
+  // Vincular stream ao elemento de vídeo
   useEffect(() => {
     if (videoPreviewRef.current && cameraStream) {
       videoPreviewRef.current.srcObject = cameraStream;
@@ -166,11 +164,25 @@ export default function App() {
     }
   }, [cameraStream, activeTab]);
 
-  // Ação de transição para a aba de Gravar (inicia câmera no clique do usuário)
+  // Abertura da câmera
   const handleOpenRecordTab = async () => {
     triggerHaptic(20);
     setActiveTab('record');
     await initCamera();
+  };
+
+  // Voltar da Câmera para a tela anterior
+  const handleExitRecordTab = () => {
+    triggerHaptic(15);
+    if (isRecording) {
+      stopRecording();
+    }
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+      setCameraStream(null);
+    }
+    setIsPrompterPlaying(false);
+    setActiveTab('script');
   };
 
   // Alternar entre câmera frontal e traseira
@@ -182,7 +194,7 @@ export default function App() {
   };
 
   // ==============================================================
-  // GRAVAÇÃO DE VÍDEO (MediaRecorder com suporte para iOS Safari)
+  // GRAVAÇÃO DE VÍDEO (MediaRecorder)
   // ==============================================================
   const startRecordingFlow = () => {
     triggerHaptic(25);
@@ -198,7 +210,6 @@ export default function App() {
     }
   };
 
-  // Contagem regressiva com haptic
   useEffect(() => {
     if (countdown === null) return;
     if (countdown > 0) {
@@ -218,7 +229,6 @@ export default function App() {
     triggerHaptic(40);
     recordedChunksRef.current = [];
 
-    // Detecção do codec ideal
     let mimeType = '';
     const possibleTypes = [
       'video/mp4;codecs=avc1',
@@ -265,7 +275,7 @@ export default function App() {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
     } catch (e) {
-      console.error('Falha ao iniciar gravador:', e);
+      console.error('Falha ao iniciar gravação:', e);
       alert('Não foi possível iniciar o gravador de vídeo neste aparelho.');
     }
   };
@@ -282,7 +292,6 @@ export default function App() {
     setIsPrompterPlaying(false);
   };
 
-  // Tempo formatado 00:00
   const formattedRecordTime = useMemo(() => {
     const mins = Math.floor(recordingSeconds / 60);
     const secs = recordingSeconds % 60;
@@ -290,7 +299,7 @@ export default function App() {
   }, [recordingSeconds]);
 
   // ==============================================================
-  // LOOP DE ROLAGEM SUAVE DO PROMPTER
+  // LOOP DE ROLAGEM SUAVE DO TELEPROMPTER
   // ==============================================================
   useEffect(() => {
     if (!isPrompterPlaying || activeTab !== 'record') return;
@@ -314,7 +323,7 @@ export default function App() {
     return () => cancelAnimationFrame(animId);
   }, [isPrompterPlaying, activeTab, settings.speed]);
 
-  // Exportar / Baixar Vídeo Gravado
+  // Download do Vídeo
   const handleDownloadVideo = () => {
     if (!recordedVideoUrl) return;
     triggerHaptic(20);
@@ -326,7 +335,7 @@ export default function App() {
     document.body.removeChild(a);
   };
 
-  // Compartilhar nativo no iOS
+  // Compartilhamento nativo (AirDrop / WhatsApp / Mensagens)
   const handleShareVideo = async () => {
     if (!recordedBlob) return;
     triggerHaptic(20);
@@ -363,21 +372,21 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#000000] text-[#f2f2f7] flex flex-col font-sans select-none antialiased">
+    <div className="w-full h-full min-h-screen bg-[#000000] text-[#f2f2f7] flex flex-col font-sans select-none antialiased overflow-x-hidden">
       {/* ============================================================== */}
-      {/* ABA 1: ROTEIRO (APPLE HIG LARGE TITLE & INSET GROUPED) */}
+      {/* ABA 1: ROTEIRO (APPLE HIG COMPLIANT & SAFE AREAS RESPEITADAS)   */}
       {/* ============================================================== */}
       {activeTab === 'script' && (
-        <div className="flex-1 flex flex-col max-w-2xl w-full mx-auto px-4 safe-top tabbar-padding animate-in fade-in duration-200">
-          {/* Large Title Bar no padrão iOS */}
-          <header className="flex items-center justify-between pt-3 pb-4">
+        <div className="flex-1 flex flex-col w-full max-w-xl mx-auto ios-safe-x ios-safe-top ios-safe-bottom-scroll overflow-y-auto animate-in fade-in duration-200">
+          {/* Header com Large Title oficial da Apple */}
+          <header className="flex items-center justify-between pb-4">
             <div>
               <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-white">
                 Roteiro
               </h1>
-              <span className="text-xs text-[#8e8e93]">
+              <p className="text-xs text-[#8e8e93] mt-0.5">
                 {stats.words} palavras • ~{stats.duration} de fala
-              </span>
+              </p>
             </div>
 
             <div className="flex items-center gap-2">
@@ -386,7 +395,7 @@ export default function App() {
                   triggerHaptic(15);
                   setShowTemplatesSheet(true);
                 }}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1c1c1e] border border-white/10 text-xs font-semibold text-white hover:bg-white/15 active:scale-95 transition-all cursor-pointer min-h-[44px]"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-[#1c1c1e] border border-white/10 text-xs font-semibold text-white hover:bg-white/15 active:scale-95 transition-all cursor-pointer min-h-[44px]"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                 <span>Modelos</span>
@@ -398,7 +407,7 @@ export default function App() {
                   setScript('');
                 }}
                 title="Limpar texto"
-                className="w-10 h-10 rounded-full bg-[#1c1c1e] border border-white/10 text-zinc-400 hover:text-red-400 flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+                className="w-11 h-11 rounded-full bg-[#1c1c1e] border border-white/10 text-zinc-400 hover:text-red-400 flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
               >
                 <Trash2 className="w-4 h-4" />
               </button>
@@ -406,7 +415,7 @@ export default function App() {
           </header>
 
           {/* Cartão de Escrita Apple Inset Grouped */}
-          <div className="ios-inset-group flex-1 flex flex-col p-4 md:p-5 shadow-2xl relative min-h-[360px]">
+          <div className="ios-inset-group flex-1 flex flex-col p-4 md:p-5 shadow-2xl relative min-h-[320px]">
             <textarea
               value={script}
               onChange={(e) => setScript(e.target.value)}
@@ -415,8 +424,8 @@ export default function App() {
             />
           </div>
 
-          {/* Botão de Avanço Rápido para a Câmera */}
-          <div className="mt-4">
+          {/* Botão de Ação Primária Apple (Abertura da Câmera) */}
+          <div className="mt-4 mb-4">
             <button
               onClick={handleOpenRecordTab}
               className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-base hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer min-h-[50px]"
@@ -430,11 +439,11 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* ABA 2: CÂMERA & GRAVAÇÃO AO VIVO (COM FEED REAL DO SAFARI) */}
+      {/* ABA 2: CÂMERA & GRAVAÇÃO (SAFE READING WINDOW & BOTÃO VOLTAR)   */}
       {/* ============================================================== */}
       {activeTab === 'record' && (
         <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex flex-col z-30">
-          {/* Elemento de Vídeo Real da Câmera (Com todos os atributos do iOS) */}
+          {/* Câmera em Segundo Plano */}
           <video
             ref={videoPreviewRef}
             autoPlay
@@ -451,15 +460,15 @@ export default function App() {
             style={{ backgroundColor: `rgba(0, 0, 0, ${settings.overlayOpacity})` }}
           />
 
-          {/* Tela de Ativação caso a câmera ainda não tenha iniciado */}
+          {/* Botão de Ativação caso a Câmera precise de Permissão no Safari */}
           {!cameraStream && !cameraLoading && (
-            <div className="absolute inset-0 z-40 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-xl text-center">
+            <div className="absolute inset-0 z-40 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-xl text-center ios-safe-x">
               <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mb-4 text-white">
                 <Camera className="w-8 h-8" />
               </div>
               <h2 className="text-xl font-bold text-white mb-2">Câmera Pronta para Gravar</h2>
               <p className="text-xs text-[#8e8e93] max-w-xs mb-6">
-                Toque no botão abaixo para ativar a câmera e o microfone no seu aparelho.
+                Toque no botão abaixo para ativar a câmera e o microfone no seu iPhone.
               </p>
               <button
                 onClick={() => initCamera()}
@@ -473,7 +482,7 @@ export default function App() {
 
           {/* Alerta de Permissão Bloqueada */}
           {cameraError && (
-            <div className="absolute top-16 left-4 right-4 z-40 p-4 rounded-2xl bg-red-950/95 border border-red-500/40 text-white text-xs flex items-start gap-3 backdrop-blur-xl shadow-2xl">
+            <div className="absolute top-20 left-4 right-4 z-40 p-4 rounded-2xl bg-red-950/95 border border-red-500/40 text-white text-xs flex items-start gap-3 backdrop-blur-xl shadow-2xl">
               <CircleAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
               <div>
                 <strong className="block font-semibold mb-1 text-red-200">Permissão Necessária</strong>
@@ -488,10 +497,22 @@ export default function App() {
             </div>
           )}
 
-          {/* Barra Superior da Câmera (Safe Area Top + SF Symbols) */}
-          <div className="absolute top-0 left-0 right-0 z-30 safe-top px-4 py-3 flex items-center justify-between pointer-events-auto">
-            {/* Indicador de Gravação REC */}
-            <div className="flex items-center gap-2">
+          {/* ============================================================== */}
+          {/* BARRA SUPERIOR DA CÂMERA (COM BOTÃO VOLTAR OBRIGATÓRIO)         */}
+          {/* ============================================================== */}
+          <div className="absolute ios-camera-top left-0 right-0 z-30 ios-safe-x flex items-center justify-between pointer-events-auto">
+            {/* BOTÃO VOLTAR (Retorna ao Roteiro imediatamente) */}
+            <button
+              onClick={handleExitRecordTab}
+              title="Voltar ao Roteiro"
+              className="flex items-center gap-1 px-3 py-2 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white font-semibold text-xs min-h-[44px] active:scale-95 transition-all cursor-pointer shadow-lg"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Voltar</span>
+            </button>
+
+            {/* Indicador Central de REC ou Duração */}
+            <div className="flex items-center">
               {isRecording ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 backdrop-blur-md text-white font-mono text-xs font-bold shadow-lg animate-pulse">
                   <span className="w-2 h-2 rounded-full bg-white" />
@@ -505,7 +526,7 @@ export default function App() {
               )}
             </div>
 
-            {/* Ações Rápidas no Topo */}
+            {/* Ações da Câmera (Inverter, Ajustes, Espelho) */}
             <div className="flex items-center gap-2">
               <button
                 onClick={toggleCameraFacing}
@@ -540,7 +561,7 @@ export default function App() {
           {settings.guideLine && (
             <div
               className="absolute left-0 right-0 pointer-events-none z-20 flex items-center justify-between px-6"
-              style={{ top: '35%', transform: 'translateY(-50%)' }}
+              style={{ top: '34%', transform: 'translateY(-50%)' }}
             >
               <div className="w-3 h-3 border-l-2 border-b-2 border-white/70 -rotate-45" />
               <div className="flex-1 mx-4 h-[1.5px] bg-gradient-to-r from-transparent via-white/40 to-transparent" />
@@ -562,17 +583,19 @@ export default function App() {
             </div>
           )}
 
-          {/* Texto Rolante do Teleprompter Sobre o Vídeo */}
+          {/* ============================================================== */}
+          {/* FAIXA SEGURA DE LEITURA (NUNCA ULTRAPASSA OS BOTÕES INFERIORES) */}
+          {/* ============================================================== */}
           <div
             ref={scrollContainerRef}
-            className="flex-1 w-full h-full overflow-y-auto teleprompter-scroller relative z-20"
+            className="absolute top-[20%] bottom-[26%] left-0 right-0 z-20 overflow-y-auto teleprompter-scroller ios-safe-x"
             style={{
-              paddingTop: '35vh',
-              paddingBottom: '55vh',
+              paddingTop: '12vh',
+              paddingBottom: '24vh',
             }}
           >
             <div
-              className={`mx-auto px-6 transition-transform duration-200 ${
+              className={`mx-auto transition-transform duration-200 ${
                 settings.mirrorHorizontal && settings.mirrorVertical
                   ? 'mirror-both'
                   : settings.mirrorHorizontal
@@ -587,7 +610,7 @@ export default function App() {
                 lineHeight: settings.lineHeight,
                 color: settings.textColor,
                 textAlign: settings.textAlign,
-                textShadow: '0 2px 10px rgba(0, 0, 0, 0.95), 0 0 20px rgba(0,0,0,0.85)',
+                textShadow: '0 2px 12px rgba(0, 0, 0, 0.98), 0 0 25px rgba(0,0,0,0.9)',
               }}
             >
               {script.split('\n').map((paragraph, idx) => (
@@ -598,8 +621,10 @@ export default function App() {
             </div>
           </div>
 
-          {/* Shutter Apple & Controles Inferiores da Câmera */}
-          <div className="absolute bottom-6 left-0 right-0 z-30 safe-bottom px-6 flex items-center justify-around pointer-events-auto">
+          {/* ============================================================== */}
+          {/* CONTROLES INFERIORES DA CÂMERA (SHUTTER APPLE & SAFE BOTTOM)    */}
+          {/* ============================================================== */}
+          <div className="absolute ios-camera-bottom left-0 right-0 z-30 ios-safe-x flex items-center justify-around pointer-events-auto">
             {/* Play/Pause Rolagem */}
             <button
               onClick={() => {
@@ -607,12 +632,12 @@ export default function App() {
                 setIsPrompterPlaying(!isPrompterPlaying);
               }}
               title={isPrompterPlaying ? 'Pausar Rolagem' : 'Iniciar Rolagem'}
-              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px] shadow-lg"
             >
               {isPrompterPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
             </button>
 
-            {/* BOTÃO PRINCIPAL DE GRAVAÇÃO (Shutter Apple Camera) */}
+            {/* SHUTTER APPLE CAMERA (BOTÃO CENTRAL DE GRAVAÇÃO) */}
             <div className="flex flex-col items-center">
               <button
                 onClick={isRecording ? stopRecording : startRecordingFlow}
@@ -621,7 +646,7 @@ export default function App() {
               >
                 <div className="ios-record-inner" />
               </button>
-              <span className="text-[11px] font-medium text-zinc-300 mt-2 bg-black/50 px-2.5 py-0.5 rounded-full backdrop-blur-md">
+              <span className="text-[11px] font-medium text-zinc-300 mt-2 bg-black/60 px-2.5 py-0.5 rounded-full backdrop-blur-md">
                 {isRecording ? 'Toque para Finalizar' : 'Gravar Vídeo'}
               </span>
             </div>
@@ -635,7 +660,7 @@ export default function App() {
                 }
               }}
               title="Voltar ao início do texto"
-              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px] shadow-lg"
             >
               <RotateCcw className="w-5 h-5" />
             </button>
@@ -644,17 +669,17 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* ABA 3: AJUSTES DO ESTÚDIO (APPLE INSET GROUPED LISTS) */}
+      {/* ABA 3: AJUSTES DO ESTÚDIO (INSET GROUPED COM SAFE SCROLL)       */}
       {/* ============================================================== */}
       {activeTab === 'settings' && (
-        <div className="flex-1 max-w-2xl w-full mx-auto px-4 safe-top tabbar-padding animate-in fade-in duration-200">
-          <header className="pt-3 pb-4">
+        <div className="flex-1 w-full max-w-xl mx-auto ios-safe-x ios-safe-top ios-safe-bottom-scroll overflow-y-auto animate-in fade-in duration-200">
+          <header className="pb-4">
             <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-white">
               Ajustes
             </h1>
-            <span className="text-xs text-[#8e8e93]">
-              Configure o estúdio de acordo com a sua câmera
-            </span>
+            <p className="text-xs text-[#8e8e93] mt-0.5">
+              Personalize a câmera, leitura e espelhamento
+            </p>
           </header>
 
           <div className="flex flex-col gap-6">
@@ -800,7 +825,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Seção 3: Vidro Óptico & Guias */}
+            {/* Seção 3: Vidro Óptico (Beam Splitter) */}
             <div>
               <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93] px-3 mb-2 block">
                 Vidro Óptico (Beam Splitter)
@@ -844,7 +869,7 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* TRANSLUCENT TAB BAR APPLE (83pt Pinned na parte inferior) */}
+      {/* TRANSLUCENT APPLE TAB BAR (PINNED NA BASE DO APARELHO)          */}
       {/* ============================================================== */}
       {activeTab !== 'record' && (
         <nav className="ios-tab-bar">
@@ -887,12 +912,12 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* BOTTOM SHEET 1: MODELOS DE ROTEIRO (APPLE ACTION SHEET) */}
+      {/* BOTTOM SHEET 1: MODELOS DE ROTEIRO (APPLE ACTION SHEET)         */}
       {/* ============================================================== */}
       {showTemplatesSheet && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="fixed inset-0" onClick={() => setShowTemplatesSheet(false)} />
-          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300">
             <div className="ios-sheet-handle" />
             <div className="flex items-center justify-between pb-4">
               <div>
@@ -931,11 +956,11 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* BOTTOM SHEET 2: EXPORTAR / REVER VÍDEO GRAVADO (APPLE MODAL) */}
+      {/* BOTTOM SHEET 2: EXPORTAR / REVER VÍDEO (APPLE ACTION SHEET)     */}
       {/* ============================================================== */}
       {showExportSheet && recordedVideoUrl && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300">
             <div className="ios-sheet-handle" />
             <div className="flex items-center justify-between pb-3">
               <div>
@@ -950,8 +975,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Player do Vídeo Gravado */}
-            <div className="w-full h-64 rounded-2xl bg-black border border-white/15 overflow-hidden my-3 relative shadow-inner">
+            <div className="w-full h-60 rounded-2xl bg-black border border-white/15 overflow-hidden my-3 relative shadow-inner">
               <video
                 src={recordedVideoUrl}
                 controls
@@ -961,7 +985,6 @@ export default function App() {
               />
             </div>
 
-            {/* Ações de Download e Compartilhar */}
             <div className="flex flex-col gap-2.5 mt-3">
               <button
                 onClick={handleDownloadVideo}
@@ -995,12 +1018,12 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* BOTTOM SHEET 3: AJUSTES RÁPIDOS NA TELA DA CÂMERA */}
+      {/* BOTTOM SHEET 3: AJUSTES RÁPIDOS NA TELA DA CÂMERA               */}
       {/* ============================================================== */}
       {showQuickSettingsSheet && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="fixed inset-0" onClick={() => setShowQuickSettingsSheet(false)} />
-          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300">
             <div className="ios-sheet-handle" />
             <div className="flex items-center justify-between pb-4">
               <h3 className="text-xl font-bold text-white">Ajustes Rápidos</h3>
