@@ -25,7 +25,8 @@ import {
   Layers,
   CircleAlert,
   Camera,
-  Trash2
+  Trash2,
+  Eye
 } from 'lucide-react';
 import { DEFAULT_SETTINGS, TeleprompterSettings } from './types';
 import { TEMPLATES } from './templates';
@@ -164,14 +165,14 @@ export default function App() {
     }
   }, [cameraStream, activeTab]);
 
-  // Abertura da câmera
+  // Abertura da câmera no gesto do usuário
   const handleOpenRecordTab = async () => {
     triggerHaptic(20);
     setActiveTab('record');
     await initCamera();
   };
 
-  // Voltar da Câmera para a tela anterior
+  // Voltar da Câmera para o Roteiro
   const handleExitRecordTab = () => {
     triggerHaptic(15);
     if (isRecording) {
@@ -194,7 +195,7 @@ export default function App() {
   };
 
   // ==============================================================
-  // GRAVAÇÃO DE VÍDEO (MediaRecorder)
+  // GRAVAÇÃO DE VÍDEO (MediaRecorder com suporte para iOS Safari)
   // ==============================================================
   const startRecordingFlow = () => {
     triggerHaptic(25);
@@ -372,13 +373,13 @@ export default function App() {
   };
 
   return (
-    <div className="w-full h-full min-h-screen bg-[#000000] text-[#f2f2f7] flex flex-col font-sans select-none antialiased overflow-x-hidden">
+    <div className="w-full h-full min-h-screen bg-[#000000] text-[#f2f2f7] flex flex-col font-sans select-none antialiased overflow-hidden">
       {/* ============================================================== */}
-      {/* ABA 1: ROTEIRO (APPLE HIG COMPLIANT & SAFE AREAS RESPEITADAS)   */}
+      {/* ABA 1: ROTEIRO (APPLE HIG LARGE TITLE & SAFE SCROLL)            */}
       {/* ============================================================== */}
       {activeTab === 'script' && (
-        <div className="flex-1 flex flex-col w-full max-w-xl mx-auto ios-safe-x ios-safe-top ios-safe-bottom-scroll overflow-y-auto animate-in fade-in duration-200">
-          {/* Header com Large Title oficial da Apple */}
+        <div className="flex-1 w-full max-w-xl mx-auto ios-safe-x ios-safe-top ios-safe-bottom-scroll overflow-y-auto animate-in fade-in duration-200">
+          {/* Header com Large Title oficial da Apple sem kicker redundante */}
           <header className="flex items-center justify-between pb-4">
             <div>
               <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-white">
@@ -415,7 +416,7 @@ export default function App() {
           </header>
 
           {/* Cartão de Escrita Apple Inset Grouped */}
-          <div className="ios-inset-group flex-1 flex flex-col p-4 md:p-5 shadow-2xl relative min-h-[320px]">
+          <div className="ios-inset-group flex-1 flex flex-col p-4 md:p-5 shadow-2xl relative min-h-[300px]">
             <textarea
               value={script}
               onChange={(e) => setScript(e.target.value)}
@@ -425,7 +426,7 @@ export default function App() {
           </div>
 
           {/* Botão de Ação Primária Apple (Abertura da Câmera) */}
-          <div className="mt-4 mb-4">
+          <div className="mt-4 mb-6">
             <button
               onClick={handleOpenRecordTab}
               className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-base hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer min-h-[50px]"
@@ -435,6 +436,9 @@ export default function App() {
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Espaçador de segurança obrigatório para evitar corte pela Tab Bar */}
+          <div className="h-28 w-full shrink-0" aria-hidden="true" />
         </div>
       )}
 
@@ -460,7 +464,7 @@ export default function App() {
             style={{ backgroundColor: `rgba(0, 0, 0, ${settings.overlayOpacity})` }}
           />
 
-          {/* Botão de Ativação caso a Câmera precise de Permissão no Safari */}
+          {/* Tela de Ativação caso a Câmera precise de Permissão no Safari */}
           {!cameraStream && !cameraLoading && (
             <div className="absolute inset-0 z-40 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-xl text-center ios-safe-x">
               <div className="w-16 h-16 rounded-full bg-white/10 flex items-center justify-center mb-4 text-white">
@@ -482,7 +486,7 @@ export default function App() {
 
           {/* Alerta de Permissão Bloqueada */}
           {cameraError && (
-            <div className="absolute top-20 left-4 right-4 z-40 p-4 rounded-2xl bg-red-950/95 border border-red-500/40 text-white text-xs flex items-start gap-3 backdrop-blur-xl shadow-2xl">
+            <div className="absolute top-24 left-4 right-4 z-40 p-4 rounded-2xl bg-red-950/95 border border-red-500/40 text-white text-xs flex items-start gap-3 backdrop-blur-xl shadow-2xl">
               <CircleAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
               <div>
                 <strong className="block font-semibold mb-1 text-red-200">Permissão Necessária</strong>
@@ -505,7 +509,7 @@ export default function App() {
             <button
               onClick={handleExitRecordTab}
               title="Voltar ao Roteiro"
-              className="flex items-center gap-1 px-3 py-2 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white font-semibold text-xs min-h-[44px] active:scale-95 transition-all cursor-pointer shadow-lg"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white font-semibold text-xs min-h-[44px] active:scale-95 transition-all cursor-pointer shadow-lg"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Voltar</span>
@@ -561,7 +565,7 @@ export default function App() {
           {settings.guideLine && (
             <div
               className="absolute left-0 right-0 pointer-events-none z-20 flex items-center justify-between px-6"
-              style={{ top: '34%', transform: 'translateY(-50%)' }}
+              style={{ top: '32%', transform: 'translateY(-50%)' }}
             >
               <div className="w-3 h-3 border-l-2 border-b-2 border-white/70 -rotate-45" />
               <div className="flex-1 mx-4 h-[1.5px] bg-gradient-to-r from-transparent via-white/40 to-transparent" />
@@ -588,10 +592,10 @@ export default function App() {
           {/* ============================================================== */}
           <div
             ref={scrollContainerRef}
-            className="absolute top-[20%] bottom-[26%] left-0 right-0 z-20 overflow-y-auto teleprompter-scroller ios-safe-x"
+            className="absolute top-[18%] bottom-[25%] left-0 right-0 z-20 overflow-y-auto teleprompter-scroller ios-safe-x"
             style={{
-              paddingTop: '12vh',
-              paddingBottom: '24vh',
+              paddingTop: '10vh',
+              paddingBottom: '22vh',
             }}
           >
             <div
@@ -610,7 +614,7 @@ export default function App() {
                 lineHeight: settings.lineHeight,
                 color: settings.textColor,
                 textAlign: settings.textAlign,
-                textShadow: '0 2px 12px rgba(0, 0, 0, 0.98), 0 0 25px rgba(0,0,0,0.9)',
+                textShadow: '0 2px 14px rgba(0, 0, 0, 1), 0 0 30px rgba(0,0,0,0.95)',
               }}
             >
               {script.split('\n').map((paragraph, idx) => (
@@ -848,9 +852,12 @@ export default function App() {
                 </div>
 
                 <div className="ios-row">
-                  <div>
-                    <div className="text-sm font-medium text-white">Linha Guia de Olhar</div>
-                    <div className="text-xs text-[#8e8e93]">Marcador óptico alinhado à lente</div>
+                  <div className="flex items-center gap-2">
+                    <Eye className="w-4 h-4 text-zinc-400" />
+                    <div>
+                      <div className="text-sm font-medium text-white">Linha Guia de Olhar</div>
+                      <div className="text-xs text-[#8e8e93]">Marcador visual alinhado à lente</div>
+                    </div>
                   </div>
                   <button
                     onClick={() => {
@@ -865,6 +872,9 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* Espaçador de segurança obrigatório para evitar corte pela Tab Bar */}
+          <div className="h-28 w-full shrink-0" aria-hidden="true" />
         </div>
       )}
 

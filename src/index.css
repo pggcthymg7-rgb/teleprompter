@@ -2,7 +2,7 @@
 @import "tailwindcss";
 
 :root {
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", -apple-system-body, system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", -apple-system-body, "Inter", system-ui, sans-serif;
   color-scheme: dark;
   background-color: #000000;
   color: #f2f2f7;
@@ -24,36 +24,46 @@ html, body {
   color: #f2f2f7;
   letter-spacing: -0.015em;
   overflow-x: hidden;
+  position: fixed;
+  inset: 0;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ============================================================== */
 /* ÁREAS SEGURAS APPLE HIG (DYNAMIC ISLAND, NOTCH & HOME BAR)     */
 /* ============================================================== */
 
-/* Safe Area Top para Header e Navigation Bars */
+/* Safe Area Top para Header e Navigation Bars (Garante 72px+ de margem) */
 .ios-safe-top {
-  padding-top: calc(max(env(safe-area-inset-top, 0px), 54px) + 8px);
+  padding-top: calc(max(env(safe-area-inset-top, 0px), 54px) + 16px);
 }
 
-/* Safe Area Top para controles flutuantes da Câmera */
+/* Safe Area Top para controles flutuantes da Câmera (Abaixo da Dynamic Island) */
 .ios-camera-top {
-  top: calc(max(env(safe-area-inset-top, 0px), 54px) + 6px);
+  top: calc(max(env(safe-area-inset-top, 0px), 54px) + 14px);
 }
 
 /* Safe Area Bottom para rolar conteúdo acima da Tab Bar */
 .ios-safe-bottom-scroll {
-  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 34px) + 96px);
+  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 34px) + 100px);
 }
 
 /* Safe Area Bottom para controles inferiores da Câmera */
 .ios-camera-bottom {
-  bottom: calc(max(env(safe-area-inset-bottom, 0px), 34px) + 12px);
+  bottom: calc(max(env(safe-area-inset-bottom, 0px), 34px) + 16px);
 }
 
-/* Margem lateral de segurança para curvas do iPhone */
+/* Margem lateral de segurança para curvas do iPhone (20px de respiro) */
 .ios-safe-x {
-  padding-left: calc(max(env(safe-area-inset-left, 0px), 16px) + 4px);
-  padding-right: calc(max(env(safe-area-inset-right, 0px), 16px) + 4px);
+  padding-left: calc(max(env(safe-area-inset-left, 0px), 16px) + 6px);
+  padding-right: calc(max(env(safe-area-inset-right, 0px), 16px) + 6px);
 }
 
 /* ============================================================== */
@@ -145,7 +155,7 @@ html, body {
   border-top-right-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.85);
-  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 24px) + 16px);
+  padding-bottom: calc(max(env(safe-area-inset-bottom, 0px), 24px) + 20px);
 }
 
 .ios-sheet-handle {
@@ -201,13 +211,16 @@ html, body {
   transform: scale(-1, -1);
 }
 
-/* Teleprompter Scroller sem barras visíveis */
+/* Teleprompter Scroller sem barras visíveis e com máscara suave */
 .teleprompter-scroller {
   scroll-behavior: auto;
   user-select: none;
   -webkit-user-select: none;
   scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%);
 }
+
 .teleprompter-scroller::-webkit-scrollbar {
   display: none;
 }
