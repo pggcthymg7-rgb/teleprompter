@@ -83,6 +83,7 @@ export default function App() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollPosRef = useRef<number>(0);
   const recordingTimerRef = useRef<any>(null);
 
   // Persistência local
@@ -302,21 +303,37 @@ export default function App() {
   }, [recordingSeconds]);
 
   // ==============================================================
-  // LOOP DE ROLAGEM SUAVE DO TELEPROMPTER
+  // LOOP DE ROLAGEM SUAVE DO TELEPROMPTER (SUBPIXEL ACCUMULATOR)
   // ==============================================================
   useEffect(() => {
     if (!isPrompterPlaying || activeTab !== 'record') return;
+
+    // Sincroniza acumulador de subpixels com o scrollTop atual
+    if (scrollContainerRef.current) {
+      scrollPosRef.current = scrollContainerRef.current.scrollTop;
+    }
 
     let animId: number;
     let lastTime = performance.now();
 
     const scrollLoop = (currentTime: number) => {
-      const delta = (currentTime - lastTime) / 1000;
+      // Clampa delta máximo a 0.1s para evitar saltos se a aba ficar inativa
+      const delta = Math.min((currentTime - lastTime) / 1000, 0.1);
       lastTime = currentTime;
 
       if (scrollContainerRef.current) {
-        const pixelsPerSecond = settings.speed * 26;
-        scrollContainerRef.current.scrollTop += pixelsPerSecond * delta;
+        // Calibragem precisa de velocidade:
+        // 1x = 16 px/s (leitura lenta e pausada)
+        // 2x = 28 px/s (leitura calma e natural)
+        // 3x = 40 px/s (ritmo normal de apresentação)
+        // Cada 1x adiciona 12 px/s lineares.
+        // Ponderado proporcionalmente ao tamanho da fonte para manter o WPM constante.
+        const fontScale = settings.fontSize / 32;
+        const pixelsPerSecond = (16 + (settings.speed - 1) * 12) * fontScale;
+
+        // Acúmulo em ponto flutuante previne o truncamento a zero do Safari iOS (120Hz)
+        scrollPosRef.current += pixelsPerSecond * delta;
+        scrollContainerRef.current.scrollTop = scrollPosRef.current;
       }
 
       animId = requestAnimationFrame(scrollLoop);
@@ -324,7 +341,7 @@ export default function App() {
 
     animId = requestAnimationFrame(scrollLoop);
     return () => cancelAnimationFrame(animId);
-  }, [isPrompterPlaying, activeTab, settings.speed]);
+  }, [isPrompterPlaying, activeTab, settings.speed, settings.fontSize]);
 
   // ==============================================================
   // EXPORTAÇÃO NATIVA PARA O IPHONE (ROLO DA CÂMERA & ARQUIVOS)
@@ -649,6 +666,18 @@ export default function App() {
           {/* ============================================================== */}
           <div
             ref={scrollContainerRef}
+            onTouchStart={() => {
+              if (scrollContainerRef.current) {
+                scrollPosRef.current = scrollContainerRef.current.scrollTop;
+              }
+            }}
+            onScroll={() => {
+              if (scrollContainerRef.current) {
+                if (Math.abs(scrollContainerRef.current.scrollTop - scrollPosRef.current) > 3) {
+                  scrollPosRef.current = scrollContainerRef.current.scrollTop;
+                }
+              }
+            }}
             className="absolute top-[18%] bottom-[25%] left-0 right-0 z-20 overflow-y-auto teleprompter-scroller ios-safe-x"
             style={{
               paddingTop: '10vh',
@@ -716,6 +745,7 @@ export default function App() {
             <button
               onClick={() => {
                 triggerHaptic(15);
+                scrollPosRef.current = 0;
                 if (scrollContainerRef.current) {
                   scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
                 }
@@ -826,10 +856,10 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-4 gap-1.5 w-full mt-1">
                     {[
-                      { label: 'Calmo', val: 2 },
-                      { label: 'Normal', val: 3 },
-                      { label: 'Ágil', val: 5 },
-                      { label: 'Rápido', val: 7 },
+                      { label: '1x Lento', val: 1 },
+                      { label: '2x Calmo', val: 2 },
+                      { label: '3x Normal', val: 3 },
+                      { label: '5x Ágil', val: 5 },
                     ].map((p) => (
                       <button
                         key={p.label}
@@ -846,6 +876,24 @@ export default function App() {
                         {p.label}
                       </button>
                     ))}
+                  </div>
+
+                  {/* Slider contínuo de ajuste fino (1x a 10x com passo de 0.5x) */}
+                  <div className="w-full flex items-center gap-3 mt-2.5 px-1">
+                    <span className="text-[11px] font-mono text-zinc-500">1x</span>
+                    <input
+                      type="range"
+                      min="1"
+                      max="10"
+                      step="0.5"
+                      value={settings.speed}
+                      onChange={(e) => {
+                        triggerHaptic(5);
+                        setSettings({ ...settings, speed: parseFloat(e.target.value) });
+                      }}
+                      className="ios-slider flex-1"
+                    />
+                    <span className="text-[11px] font-mono text-zinc-500">10x</span>
                   </div>
                 </div>
 
@@ -1136,30 +1184,48 @@ export default function App() {
             </div>
 
             <div className="flex flex-col gap-3">
-              {/* Velocidade Stepper */}
-              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
-                <span className="text-sm font-medium text-white flex items-center gap-2">
-                  <Gauge className="w-4 h-4 text-amber-400" /> Velocidade: {settings.speed}x
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      triggerHaptic(10);
-                      setSettings((s) => ({ ...s, speed: Math.max(1, s.speed - 1) }));
+              {/* Velocidade Stepper e Slider */}
+              <div className="flex flex-col gap-2 p-3.5 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-white flex items-center gap-2">
+                    <Gauge className="w-4 h-4 text-amber-400" /> Velocidade: {settings.speed}x
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        triggerHaptic(10);
+                        setSettings((s) => ({ ...s, speed: Math.max(1, Math.round((s.speed - 0.5) * 10) / 10) }));
+                      }}
+                      className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px] active:scale-95 transition-transform"
+                    >
+                      -
+                    </button>
+                    <button
+                      onClick={() => {
+                        triggerHaptic(10);
+                        setSettings((s) => ({ ...s, speed: Math.min(10, Math.round((s.speed + 0.5) * 10) / 10) }));
+                      }}
+                      className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px] active:scale-95 transition-transform"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-[11px] text-zinc-500 font-mono">1x</span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="10"
+                    step="0.5"
+                    value={settings.speed}
+                    onChange={(e) => {
+                      triggerHaptic(5);
+                      setSettings((s) => ({ ...s, speed: parseFloat(e.target.value) }));
                     }}
-                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
-                  >
-                    -
-                  </button>
-                  <button
-                    onClick={() => {
-                      triggerHaptic(10);
-                      setSettings((s) => ({ ...s, speed: Math.min(10, s.speed + 1) }));
-                    }}
-                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
-                  >
-                    +
-                  </button>
+                    className="ios-slider flex-1"
+                  />
+                  <span className="text-[11px] text-zinc-500 font-mono">10x</span>
                 </div>
               </div>
 

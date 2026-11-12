@@ -18,7 +18,7 @@ export interface TeleprompterSettings {
 
 export const DEFAULT_SETTINGS: TeleprompterSettings = {
   fontSize: 40,
-  speed: 3,
+  speed: 2,
   mirrorHorizontal: false,
   mirrorVertical: false,
   textColor: '#ffffff',

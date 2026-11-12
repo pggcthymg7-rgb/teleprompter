@@ -12,6 +12,11 @@
 - **Motor de Câmera & MediaRecorder**:
   - Captura direta via `getUserMedia` acionada por gesto de toque.
   - Gravação de vídeo/áudio via `MediaRecorder` com codecs otimizados para iOS Safari (`video/mp4;codecs=avc1`).
+  - **Motor de Rolagem Subpixel do Teleprompter**:
+    - *Correção de Truncamento do Safari (120Hz)*: Em telas ProMotion (iPhone 15 Pro), incrementos diretos no DOM `scrollTop` menores que 0.5px eram truncados para zero, fazendo 1x e 2x ficarem congelados e 3x saltar bruscamente.
+    - *Acumulador Contínuo em Ponto Flutuante*: `scrollPosRef` preserva frações de pixel entre frames, garantindo fluidez contínua em qualquer taxa de quadros (60Hz / 120Hz).
+    - *Calibragem Linear & Escala WPM*: 1x (16 px/s), 2x (28 px/s), 3x (40 px/s), proporcional ao tamanho da fonte.
+    - *Controle de Precisão com Passo 0.5x*: Presets rápidos + sliders nativos no Ajustes e no Quick Settings.
   - **Exportação Nativa para a Galeria de Fotos (Camera Roll / Fotos)**:
     - *Sandbox do Safari*: Downloads via `<a download>` são restritos pela Apple à pasta "Downloads" do app "Arquivos".
     - *Solução Oficial Apple*: Invocação do `navigator.share({ files: [file] })` com arquivo `video/mp4`.
