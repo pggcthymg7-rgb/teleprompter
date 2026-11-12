@@ -16,7 +16,6 @@ import {
   ArrowRight,
   ChevronLeft,
   X,
-  Download,
   Share2,
   ChevronRight,
   SwitchCamera,
@@ -26,7 +25,9 @@ import {
   CircleAlert,
   Camera,
   Trash2,
-  Eye
+  Eye,
+  Film,
+  FolderDown
 } from 'lucide-react';
 import { DEFAULT_SETTINGS, TeleprompterSettings } from './types';
 import { TEMPLATES } from './templates';
@@ -75,6 +76,7 @@ export default function App() {
   const [showTemplatesSheet, setShowTemplatesSheet] = useState<boolean>(false);
   const [showExportSheet, setShowExportSheet] = useState<boolean>(false);
   const [showQuickSettingsSheet, setShowQuickSettingsSheet] = useState<boolean>(false);
+  const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
   // Referências
   const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
@@ -324,32 +326,87 @@ export default function App() {
     return () => cancelAnimationFrame(animId);
   }, [isPrompterPlaying, activeTab, settings.speed]);
 
-  // Download do Vídeo
+  // ==============================================================
+  // EXPORTAÇÃO NATIVA PARA O IPHONE (ROLO DA CÂMERA & ARQUIVOS)
+  // ==============================================================
+
+  // 1. Salvar no Fotos / Rolo da Câmera do iPhone (caminho nativo via Web Share)
+  const handleSaveToPhotos = async () => {
+    if (!recordedBlob) return;
+    triggerHaptic(25);
+
+    // No Safari do iOS, web apps não podem escrever direto no PHPhotoLibrary via <a download>.
+    // O canal oficial da Apple para salvar em Fotos é o Web Share API passando o arquivo 'video/mp4'.
+    // No menu de compartilhamento que o iPhone abre, a opção nativa "Salvar Vídeo" grava no Fotos.
+    const isMp4 = !recordedBlob.type.includes('webm');
+    const ext = isMp4 ? 'mp4' : 'webm';
+    const cleanMime = isMp4 ? 'video/mp4' : 'video/webm';
+    const fileName = `teleprompter-${Date.now()}.${ext}`;
+
+    const videoFile = new File([recordedBlob], fileName, {
+      type: cleanMime,
+      lastModified: Date.now(),
+    });
+
+    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+      if (navigator.canShare({ files: [videoFile] })) {
+        try {
+          await navigator.share({
+            files: [videoFile],
+            title: 'Salvar Vídeo',
+            text: 'Vídeo gravado no Teleprompter Pro',
+          });
+          setSaveSuccessMsg('Toque em "Salvar Vídeo" no menu do iPhone para guardar na sua Galeria.');
+          setTimeout(() => setSaveSuccessMsg(null), 6000);
+          return;
+        } catch (err: any) {
+          if (err?.name === 'AbortError') {
+            return; // Usuário apenas fechou o menu
+          }
+          console.warn('Erro ao abrir Share Sheet:', err);
+        }
+      }
+    }
+
+    // Fallback para computadores ou navegadores sem Web Share
+    handleDownloadVideo();
+  };
+
+  // 2. Download tradicional para a pasta de Arquivos / Downloads
   const handleDownloadVideo = () => {
     if (!recordedVideoUrl) return;
     triggerHaptic(20);
+    const isMp4 = !recordedBlob?.type.includes('webm');
+    const ext = isMp4 ? 'mp4' : 'webm';
     const a = document.createElement('a');
     a.href = recordedVideoUrl;
-    a.download = `video-teleprompter-${Date.now()}.${recordedBlob?.type.includes('mp4') ? 'mp4' : 'webm'}`;
+    a.download = `video-teleprompter-${Date.now()}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setSaveSuccessMsg('Arquivo enviado para a pasta "Downloads / Arquivos"!');
+    setTimeout(() => setSaveSuccessMsg(null), 4000);
   };
 
-  // Compartilhamento nativo (AirDrop / WhatsApp / Mensagens)
+  // 3. Compartilhamento geral (AirDrop / WhatsApp / Mensagens)
   const handleShareVideo = async () => {
     if (!recordedBlob) return;
     triggerHaptic(20);
-    if (navigator.share && navigator.canShare) {
-      const file = new File(
-        [recordedBlob],
-        `video-gravado.${recordedBlob.type.includes('mp4') ? 'mp4' : 'webm'}`,
-        { type: recordedBlob.type }
-      );
-      if (navigator.canShare({ files: [file] })) {
+    const isMp4 = !recordedBlob.type.includes('webm');
+    const ext = isMp4 ? 'mp4' : 'webm';
+    const cleanMime = isMp4 ? 'video/mp4' : 'video/webm';
+    const fileName = `video-compartilhar-${Date.now()}.${ext}`;
+
+    const videoFile = new File([recordedBlob], fileName, {
+      type: cleanMime,
+      lastModified: Date.now(),
+    });
+
+    if (typeof navigator !== 'undefined' && navigator.share && navigator.canShare) {
+      if (navigator.canShare({ files: [videoFile] })) {
         try {
           await navigator.share({
-            files: [file],
+            files: [videoFile],
             title: 'Meu Vídeo Gravado no Teleprompter',
           });
           return;
@@ -966,15 +1023,15 @@ export default function App() {
       )}
 
       {/* ============================================================== */}
-      {/* BOTTOM SHEET 2: EXPORTAR / REVER VÍDEO (APPLE ACTION SHEET)     */}
+      {/* BOTTOM SHEET 2: EXPORTAR / SALVAR NA GALERIA (APPLE HIG)       */}
       {/* ============================================================== */}
       {showExportSheet && recordedVideoUrl && (
         <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300">
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-5 md:p-6 z-10 animate-in slide-in-from-bottom duration-300 max-h-[92vh] overflow-y-auto">
             <div className="ios-sheet-handle" />
             <div className="flex items-center justify-between pb-3">
               <div>
-                <h3 className="text-xl font-bold text-white">Vídeo Gravado</h3>
+                <h3 className="text-xl font-bold text-white tracking-tight">Vídeo Gravado</h3>
                 <p className="text-xs text-[#8e8e93]">Duração: {formattedRecordTime}</p>
               </div>
               <button
@@ -985,7 +1042,8 @@ export default function App() {
               </button>
             </div>
 
-            <div className="w-full h-60 rounded-2xl bg-black border border-white/15 overflow-hidden my-3 relative shadow-inner">
+            {/* Player do Vídeo Gravado */}
+            <div className="w-full h-52 sm:h-56 rounded-2xl bg-black border border-white/15 overflow-hidden my-2.5 relative shadow-inner">
               <video
                 src={recordedVideoUrl}
                 controls
@@ -995,23 +1053,55 @@ export default function App() {
               />
             </div>
 
-            <div className="flex flex-col gap-2.5 mt-3">
+            {/* Card Didático Apple: Guia de 1 Passo para Salvar no Fotos */}
+            <div className="bg-[#2c2c2e]/90 border border-white/10 rounded-2xl p-3.5 my-2.5 text-left shadow-lg">
+              <div className="flex items-center gap-2 text-white font-semibold text-xs">
+                <div className="w-6 h-6 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-3.5 h-3.5" />
+                </div>
+                <span>Como salvar na Galeria (Fotos do iPhone):</span>
+              </div>
+              <p className="text-[12px] text-zinc-300 mt-1.5 leading-relaxed">
+                Toque no botão principal abaixo. O iPhone abrirá a folha oficial — selecione <strong className="text-white underline decoration-blue-400 font-semibold">"Salvar Vídeo"</strong> para gravar direto no seu Rolo da Câmera.
+              </p>
+            </div>
+
+            {saveSuccessMsg && (
+              <div className="p-3 mb-2 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-300 text-xs text-center font-medium animate-in fade-in duration-200">
+                {saveSuccessMsg}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2.5 mt-2">
+              {/* BOTÃO 1: PRINCIPAL (SALVAR NA GALERIA / FOTOS VIA SHARE SHEET NATIVO) */}
               <button
-                onClick={handleDownloadVideo}
-                className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-sm hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer min-h-[48px]"
+                onClick={handleSaveToPhotos}
+                className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-sm hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2.5 cursor-pointer min-h-[50px]"
               >
-                <Download className="w-4 h-4" />
-                <span>Salvar no Rolo da Câmera / Baixar</span>
+                <Film className="w-4 h-4 text-black" />
+                <span>Salvar na Galeria de Fotos</span>
               </button>
 
-              <button
-                onClick={handleShareVideo}
-                className="w-full py-3.5 rounded-2xl bg-white/10 text-white font-medium text-sm hover:bg-white/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer min-h-[48px]"
-              >
-                <Share2 className="w-4 h-4" />
-                <span>Compartilhar (AirDrop / Mensagens)</span>
-              </button>
+              {/* BOTÃO 2: ARQUIVOS OU AIRDROP */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={handleDownloadVideo}
+                  className="py-3 px-3 rounded-2xl bg-white/10 text-white font-medium text-xs hover:bg-white/15 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 cursor-pointer min-h-[46px]"
+                >
+                  <FolderDown className="w-3.5 h-3.5 text-zinc-300" />
+                  <span>Salvar em "Arquivos"</span>
+                </button>
 
+                <button
+                  onClick={handleShareVideo}
+                  className="py-3 px-3 rounded-2xl bg-white/10 text-white font-medium text-xs hover:bg-white/15 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 cursor-pointer min-h-[46px]"
+                >
+                  <Share2 className="w-3.5 h-3.5 text-zinc-300" />
+                  <span>AirDrop / WhatsApp</span>
+                </button>
+              </div>
+
+              {/* BOTÃO 3: GRAVAR NOVAMENTE */}
               <button
                 onClick={() => {
                   triggerHaptic(10);

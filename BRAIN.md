@@ -11,8 +11,12 @@
   - `Navegação da Câmera`: Botão **"‹ Voltar"** no padrão Apple HIG (`ios-camera-top`), permitindo retorno imediato ao Roteiro.
 - **Motor de Câmera & MediaRecorder**:
   - Captura direta via `getUserMedia` acionada por gesto de toque.
-  - Gravação de vídeo/áudio via `MediaRecorder` com codecs otimizados para iOS Safari.
-  - Bottom Sheet de Exportação com player de vídeo, download e compartilhamento AirDrop/WhatsApp.
+  - Gravação de vídeo/áudio via `MediaRecorder` com codecs otimizados para iOS Safari (`video/mp4;codecs=avc1`).
+  - **Exportação Nativa para a Galeria de Fotos (Camera Roll / Fotos)**:
+    - *Sandbox do Safari*: Downloads via `<a download>` são restritos pela Apple à pasta "Downloads" do app "Arquivos".
+    - *Solução Oficial Apple*: Invocação do `navigator.share({ files: [file] })` com arquivo `video/mp4`.
+    - *Resultado*: Abre a Folha de Compartilhamento nativa do iOS, onde a ação primária **"Salvar Vídeo"** grava diretamente na Galeria de Fotos (Camera Roll) do iPhone.
+    - *Opções Secundárias*: Botões dedicados para "Salvar em Arquivos" e "AirDrop / WhatsApp".
 
 ## 2. A Teia de Ramificações (Knowledge Graph / Modularity)
 - 🕸️ **Entrypoints & Config**:
