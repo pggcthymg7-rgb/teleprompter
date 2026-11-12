@@ -1,54 +1,82 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  FileText,
+  Sliders,
+  Video,
   Play,
   Pause,
   RotateCcw,
   Maximize2,
   Minimize2,
-  Sliders,
   FlipHorizontal,
-  FlipVertical,
   Type,
   Gauge,
-  Eye,
-  FileText,
   Clock,
   Sparkles,
   ArrowRight,
-  Video,
   X,
-  AlignLeft,
-  AlignCenter,
-  AlignJustify
+  Download,
+  Share2,
+  ChevronRight,
+  SwitchCamera,
+  Mic,
+  MicOff,
+  Layers,
+  CircleAlert
 } from 'lucide-react';
 import { DEFAULT_SETTINGS, TeleprompterSettings } from './types';
 import { TEMPLATES } from './templates';
 
-export default function App() {
-  // Etapa atual: 'script' (Roteiro) | 'settings' (Ajustes & Estúdio) | 'prompter' (Gravação Ao Vivo)
-  const [currentStep, setCurrentStep] = useState<'script' | 'settings' | 'prompter'>('script');
+// Feedback tátil nativo
+const triggerHaptic = (duration = 15) => {
+  if (typeof window !== 'undefined' && 'vibrate' in navigator) {
+    try {
+      navigator.vibrate(duration);
+    } catch {
+      // Ignora em navegadores sem suporte
+    }
+  }
+};
 
+export default function App() {
+  // Aba ativa da Tab Bar: 'script' | 'record' | 'settings'
+  const [activeTab, setActiveTab] = useState<'script' | 'record' | 'settings'>('script');
+
+  // Estado do Roteiro
   const [script, setScript] = useState<string>(() => {
     return localStorage.getItem('teleprompter_script') || TEMPLATES[0].content;
   });
 
+  // Configurações
   const [settings, setSettings] = useState<TeleprompterSettings>(() => {
     const saved = localStorage.getItem('teleprompter_settings');
     return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
   });
 
-  // Estados de reprodução no modo Prompter
-  const [isPlaying, setIsPlaying] = useState<boolean>(false);
+  // Estados de Câmera e Gravação
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
+  const [recordedVideoUrl, setRecordedVideoUrl] = useState<string | null>(null);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+
+  // Estados de Rolagem do Prompter
+  const [isPrompterPlaying, setIsPrompterPlaying] = useState<boolean>(false);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [controlsVisible, setControlsVisible] = useState<boolean>(true);
 
-  // Estado para teste de rolagem no simulador da Etapa 2
-  const [isPreviewScrolling, setIsPreviewScrolling] = useState<boolean>(false);
+  // Bottom Sheets / Modais Apple
+  const [showTemplatesSheet, setShowTemplatesSheet] = useState<boolean>(false);
+  const [showExportSheet, setShowExportSheet] = useState<boolean>(false);
+  const [showQuickSettingsSheet, setShowQuickSettingsSheet] = useState<boolean>(false);
 
+  // Refs de mídia e animação
+  const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const previewScrollRef = useRef<HTMLDivElement | null>(null);
-  const hideTimeoutRef = useRef<any>(null);
+  const recordingTimerRef = useRef<any>(null);
 
   // Persistência local
   useEffect(() => {
@@ -69,32 +97,185 @@ export default function App() {
     return { words, chars, duration };
   }, [script]);
 
-  // Transição para modo de gravação
-  const startRecording = () => {
-    setCurrentStep('prompter');
-    setIsPlaying(false);
-    if (settings.countdownSeconds > 0) {
-      setCountdown(settings.countdownSeconds);
-    } else {
-      setIsPlaying(true);
+  // ==============================================================
+  // GERENCIAMENTO DA CÂMERA (getUserMedia)
+  // ==============================================================
+  const startCamera = async () => {
+    setCameraError(null);
+    try {
+      // Parar stream anterior se existir
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: settings.cameraFacing,
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: settings.audioEnabled,
+      });
+
+      setCameraStream(stream);
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+      }
+    } catch (err: any) {
+      console.error('Erro ao acessar câmera:', err);
+      setCameraError(
+        'Permissão de câmera ou microfone necessária. Por favor, autorize nas configurações do seu navegador para gravar.'
+      );
     }
   };
 
-  // Contagem regressiva da gravação
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+      setCameraStream(null);
+    }
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = null;
+    }
+  };
+
+  // Iniciar/Parar câmera dependendo da aba ativa
+  useEffect(() => {
+    if (activeTab === 'record') {
+      startCamera();
+    } else {
+      if (!isRecording) {
+        stopCamera();
+      }
+    }
+    return () => {
+      // Cleanup no unmount
+      if (cameraStream && !isRecording) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+      }
+    };
+  }, [activeTab, settings.cameraFacing, settings.audioEnabled]);
+
+  // Reconectar stream ao elemento de vídeo quando estiver pronto
+  useEffect(() => {
+    if (videoPreviewRef.current && cameraStream) {
+      videoPreviewRef.current.srcObject = cameraStream;
+    }
+  }, [cameraStream, activeTab]);
+
+  // Alternar entre câmera frontal e traseira
+  const toggleCameraFacing = () => {
+    triggerHaptic(20);
+    setSettings((prev) => ({
+      ...prev,
+      cameraFacing: prev.cameraFacing === 'user' ? 'environment' : 'user',
+    }));
+  };
+
+  // ==============================================================
+  // GRAVAÇÃO DE VÍDEO (MediaRecorder)
+  // ==============================================================
+  const startRecordingFlow = () => {
+    triggerHaptic(25);
+    if (!cameraStream) {
+      startCamera();
+      return;
+    }
+
+    if (settings.countdownSeconds > 0) {
+      setCountdown(settings.countdownSeconds);
+    } else {
+      beginActualRecording();
+    }
+  };
+
+  // Contagem regressiva
   useEffect(() => {
     if (countdown === null) return;
     if (countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      const timer = setTimeout(() => {
+        triggerHaptic(10);
+        setCountdown(countdown - 1);
+      }, 1000);
       return () => clearTimeout(timer);
     } else {
       setCountdown(null);
-      setIsPlaying(true);
+      beginActualRecording();
     }
   }, [countdown]);
 
-  // Loop de rolagem no Prompter ao vivo
+  const beginActualRecording = () => {
+    if (!cameraStream) return;
+    triggerHaptic(40);
+    recordedChunksRef.current = [];
+
+    // Escolher codec compatível
+    const mimeType = [
+      'video/mp4;codecs=avc1',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ].find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || '';
+
+    try {
+      const recorder = new MediaRecorder(cameraStream, mimeType ? { mimeType } : undefined);
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const finalBlob = new Blob(recordedChunksRef.current, {
+          type: mimeType || 'video/mp4',
+        });
+        const url = URL.createObjectURL(finalBlob);
+        setRecordedBlob(finalBlob);
+        setRecordedVideoUrl(url);
+        setShowExportSheet(true);
+      };
+
+      recorder.start(1000); // chunk a cada 1s
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setIsPrompterPlaying(true);
+      setRecordingSeconds(0);
+
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (e) {
+      console.error('Falha ao iniciar gravador:', e);
+      alert('Não foi possível iniciar o gravador de vídeo neste navegador.');
+    }
+  };
+
+  const stopRecording = () => {
+    triggerHaptic(35);
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop();
+    }
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+    }
+    setIsRecording(false);
+    setIsPrompterPlaying(false);
+  };
+
+  // Formatar tempo de gravação (00:00)
+  const formattedRecordTime = useMemo(() => {
+    const mins = Math.floor(recordingSeconds / 60);
+    const secs = recordingSeconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }, [recordingSeconds]);
+
+  // ==============================================================
+  // ROLAGEM CONTÍNUA DO TELEPROMPTER
+  // ==============================================================
   useEffect(() => {
-    if (currentStep !== 'prompter' || !isPlaying) return;
+    if (!isPrompterPlaying || activeTab !== 'record') return;
 
     let animId: number;
     let lastTime = performance.now();
@@ -104,7 +285,7 @@ export default function App() {
       lastTime = currentTime;
 
       if (scrollContainerRef.current) {
-        const pixelsPerSecond = settings.speed * 28;
+        const pixelsPerSecond = settings.speed * 26;
         scrollContainerRef.current.scrollTop += pixelsPerSecond * delta;
       }
 
@@ -113,100 +294,48 @@ export default function App() {
 
     animId = requestAnimationFrame(scrollLoop);
     return () => cancelAnimationFrame(animId);
-  }, [currentStep, isPlaying, settings.speed]);
+  }, [isPrompterPlaying, activeTab, settings.speed]);
 
-  // Loop de rolagem no simulador da Etapa 2
-  useEffect(() => {
-    if (currentStep !== 'settings' || !isPreviewScrolling) return;
-
-    let animId: number;
-    let lastTime = performance.now();
-
-    const previewLoop = (currentTime: number) => {
-      const delta = (currentTime - lastTime) / 1000;
-      lastTime = currentTime;
-
-      if (previewScrollRef.current) {
-        const pixelsPerSecond = settings.speed * 28;
-        previewScrollRef.current.scrollTop += pixelsPerSecond * delta;
-      }
-
-      animId = requestAnimationFrame(previewLoop);
-    };
-
-    animId = requestAnimationFrame(previewLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [currentStep, isPreviewScrolling, settings.speed]);
-
-  // Auto-ocultação do HUD flutuante no modo gravação
-  const handleUserActivity = () => {
-    setControlsVisible(true);
-    if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
-    if (isPlaying && currentStep === 'prompter') {
-      hideTimeoutRef.current = setTimeout(() => {
-        setControlsVisible(false);
-      }, 3500);
-    }
+  // Baixar / Exportar Vídeo
+  const handleDownloadVideo = () => {
+    if (!recordedVideoUrl) return;
+    triggerHaptic(20);
+    const a = document.createElement('a');
+    a.href = recordedVideoUrl;
+    a.download = `teleprompter-video-${Date.now()}.${recordedBlob?.type.includes('mp4') ? 'mp4' : 'webm'}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
-  useEffect(() => {
-    if (isPlaying && currentStep === 'prompter') {
-      handleUserActivity();
-    } else {
-      setControlsVisible(true);
-      if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
+  // Compartilhar nativo (iOS Web Share API)
+  const handleShareVideo = async () => {
+    if (!recordedBlob) return;
+    triggerHaptic(20);
+    if (navigator.share && navigator.canShare) {
+      const file = new File(
+        [recordedBlob],
+        `video-gravado.${recordedBlob.type.includes('mp4') ? 'mp4' : 'webm'}`,
+        { type: recordedBlob.type }
+      );
+      if (navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'Meu Vídeo Gravado no Teleprompter',
+          });
+          return;
+        } catch {
+          // Usuário cancelou ou erro
+        }
+      }
     }
-  }, [isPlaying, currentStep]);
+    handleDownloadVideo();
+  };
 
-  // Atalhos de teclado
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (currentStep === 'script' && (e.target as HTMLElement)?.tagName === 'TEXTAREA') {
-        return;
-      }
-
-      if (e.code === 'Space') {
-        e.preventDefault();
-        if (currentStep === 'prompter') {
-          setIsPlaying((prev) => !prev);
-        } else if (currentStep === 'settings') {
-          setIsPreviewScrolling((prev) => !prev);
-        } else {
-          startRecording();
-        }
-      } else if (e.code === 'Escape') {
-        if (currentStep === 'prompter') {
-          setCurrentStep('settings');
-          setIsPlaying(false);
-          setCountdown(null);
-        }
-      } else if (e.code === 'ArrowUp') {
-        e.preventDefault();
-        setSettings((prev) => ({ ...prev, speed: Math.min(10, prev.speed + 1) }));
-      } else if (e.code === 'ArrowDown') {
-        e.preventDefault();
-        setSettings((prev) => ({ ...prev, speed: Math.max(1, prev.speed - 1) }));
-      } else if (e.code === 'ArrowLeft') {
-        e.preventDefault();
-        if (scrollContainerRef.current) scrollContainerRef.current.scrollTop -= 150;
-      } else if (e.code === 'ArrowRight') {
-        e.preventDefault();
-        if (scrollContainerRef.current) scrollContainerRef.current.scrollTop += 150;
-      } else if (e.key.toLowerCase() === 'm') {
-        setSettings((prev) => ({ ...prev, mirrorHorizontal: !prev.mirrorHorizontal }));
-      } else if (e.key.toLowerCase() === 'r') {
-        if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
-        if (previewScrollRef.current) previewScrollRef.current.scrollTop = 0;
-      } else if (e.key.toLowerCase() === 'f') {
-        toggleFullscreen();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep]);
-
+  // Tela cheia
   const toggleFullscreen = () => {
+    triggerHaptic(15);
     if (!document.fullscreenElement) {
       document.documentElement.requestFullscreen().catch(() => {});
       setIsFullscreen(true);
@@ -216,542 +345,207 @@ export default function App() {
     }
   };
 
-  const textColors = [
-    { label: 'Branco', value: '#ffffff' },
-    { label: 'Amarelo Neon', value: '#facc15' },
-    { label: 'Verde Neon', value: '#4ade80' },
-    { label: 'Ciano', value: '#38bdf8' },
-  ];
-
   return (
-    <div
-      className="min-h-screen bg-[#000000] text-zinc-100 flex flex-col font-sans select-none antialiased"
-      onMouseMove={handleUserActivity}
-    >
+    <div className="min-h-screen bg-[#000000] text-[#f2f2f7] flex flex-col font-sans select-none antialiased">
       {/* ============================================================== */}
-      {/* CABEÇALHO COM NAVEGAÇÃO EM ETAPAS (ESTILO APPLE HIG) */}
+      {/* ABA 1: ROTEIRO (APPLE HIG INSET GROUPED & LARGE TITLE) */}
       {/* ============================================================== */}
-      {currentStep !== 'prompter' && (
-        <header className="sticky top-0 z-30 apple-glass border-b border-white/[0.08] px-4 md:px-8 py-3.5 transition-all">
-          <div className="max-w-6xl mx-auto flex items-center justify-between gap-4">
-            {/* Logotipo e Assinatura */}
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center font-bold text-sm shadow-[0_0_20px_rgba(255,255,255,0.25)]">
-                🎙️
-              </div>
-              <div className="hidden sm:block">
-                <span className="font-semibold text-sm tracking-tight text-white flex items-center gap-1.5">
-                  Teleprompter <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-white/10 text-zinc-300">iOS</span>
-                </span>
-              </div>
-            </div>
-
-            {/* Stepper / Segmented Control das 3 Etapas */}
-            <nav className="flex items-center p-1 rounded-full bg-zinc-900/90 border border-white/[0.06] shadow-inner text-xs font-medium">
-              <button
-                onClick={() => setCurrentStep('script')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full transition-all cursor-pointer ${
-                  currentStep === 'script'
-                    ? 'apple-pill-active text-white font-semibold'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                <span>1. Roteiro</span>
-              </button>
-
-              <button
-                onClick={() => setCurrentStep('settings')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full transition-all cursor-pointer ${
-                  currentStep === 'settings'
-                    ? 'apple-pill-active text-white font-semibold'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <Sliders className="w-3.5 h-3.5" />
-                <span>2. Ajustes</span>
-              </button>
-
-              <button
-                onClick={startRecording}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-zinc-400 hover:text-white transition-all cursor-pointer"
-              >
-                <Video className="w-3.5 h-3.5 text-red-400" />
-                <span>3. Gravação</span>
-              </button>
-            </nav>
-
-            {/* Ação Primária da Etapa */}
+      {activeTab === 'script' && (
+        <div className="flex-1 flex flex-col max-w-3xl w-full mx-auto px-4 safe-top tabbar-padding animate-in fade-in duration-200">
+          {/* Header com Large Title estilo iOS */}
+          <header className="flex items-end justify-between pt-4 pb-5">
             <div>
-              {currentStep === 'script' && (
-                <button
-                  onClick={() => setCurrentStep('settings')}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-full bg-white text-black font-semibold text-xs md:text-sm hover:bg-zinc-200 active:scale-95 transition-all shadow-md cursor-pointer"
-                >
-                  <span>Ajustes</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              )}
-
-              {currentStep === 'settings' && (
-                <button
-                  onClick={startRecording}
-                  className="flex items-center gap-2 px-5 py-2 rounded-full bg-white text-black font-semibold text-xs md:text-sm hover:bg-zinc-200 active:scale-95 transition-all shadow-[0_0_25px_rgba(255,255,255,0.2)] cursor-pointer"
-                >
-                  <Play className="w-4 h-4 fill-current text-black" />
-                  <span>Gravar</span>
-                </button>
-              )}
+              <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93]">
+                Estúdio de Gravação
+              </span>
+              <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-white mt-0.5">
+                Roteiro
+              </h1>
             </div>
-          </div>
-        </header>
-      )}
 
-      {/* ============================================================== */}
-      {/* ETAPA 1: ROTEIRO (FOCO TOTAL NA ESCRITA, SEM POLUIÇÃO) */}
-      {/* ============================================================== */}
-      {currentStep === 'script' && (
-        <main className="flex-1 flex flex-col max-w-4xl w-full mx-auto p-4 md:p-8 animate-in fade-in duration-300">
-          <div className="flex flex-col gap-6 flex-1">
-            {/* Título e Modelos Rápidos estilo Apple Pills */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2">
-              <div>
-                <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
-                  Seu Roteiro
-                </h2>
-                <p className="text-xs text-zinc-400 mt-1">
-                  Digite ou cole o texto que será exibido no visor de leitura.
-                </p>
-              </div>
+            <button
+              onClick={() => {
+                triggerHaptic(15);
+                setShowTemplatesSheet(true);
+              }}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1c1c1e] border border-white/10 text-xs font-semibold text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer min-h-[44px]"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              <span>Modelos</span>
+            </button>
+          </header>
 
-              {/* Modelos */}
-              <div className="flex items-center gap-1.5 overflow-x-auto py-1">
-                <span className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider flex items-center gap-1 mr-1">
-                  <Sparkles className="w-3 h-3 text-amber-400" /> Modelos:
+          {/* Cartão de Escrita Apple Inset Grouped */}
+          <div className="ios-inset-group flex-1 flex flex-col p-5 shadow-2xl relative min-h-[380px]">
+            <textarea
+              value={script}
+              onChange={(e) => setScript(e.target.value)}
+              placeholder="Digite ou cole seu roteiro aqui..."
+              className="w-full flex-1 bg-transparent border-0 outline-none focus:outline-none text-white text-lg md:text-xl font-normal leading-relaxed resize-none placeholder:text-zinc-600"
+            />
+
+            {/* Barra de Status no rodapé do roteiro */}
+            <div className="pt-4 mt-3 border-t border-white/[0.08] flex items-center justify-between text-xs text-[#8e8e93]">
+              <div className="flex items-center gap-3">
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  Tempo estimado: <strong className="text-white font-medium">{stats.duration}</strong>
                 </span>
-                {TEMPLATES.map((tpl) => (
-                  <button
-                    key={tpl.id}
-                    onClick={() => setScript(tpl.content)}
-                    className="text-xs px-3 py-1.5 rounded-full bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.06] text-zinc-300 hover:text-white transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    {tpl.title}
-                  </button>
-                ))}
+                <span>•</span>
+                <span>
+                  <strong className="text-white font-medium">{stats.words}</strong> palavras
+                </span>
               </div>
-            </div>
 
-            {/* Cartão de Escrita Apple Glass */}
-            <div className="apple-glass-card rounded-3xl p-6 md:p-8 flex-1 flex flex-col shadow-[0_8px_32px_rgba(0,0,0,0.6)] relative">
-              <textarea
-                value={script}
-                onChange={(e) => setScript(e.target.value)}
-                placeholder="Cole ou digite aqui seu texto..."
-                className="w-full flex-1 min-h-[380px] bg-transparent border-0 outline-none focus:outline-none text-zinc-100 text-lg md:text-xl font-normal leading-relaxed resize-none placeholder:text-zinc-700"
-              />
-
-              {/* Barra de Status estilo iOS no rodapé do editor */}
-              <div className="pt-4 mt-4 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400">
-                <div className="flex items-center gap-4">
-                  <span className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-zinc-400" />
-                    Tempo de fala: <strong className="text-white font-medium">{stats.duration}</strong>
-                  </span>
-                  <span>
-                    <strong className="text-white font-medium">{stats.words}</strong> palavras
-                  </span>
-                  <span className="hidden sm:inline">
-                    <strong className="text-white font-medium">{stats.chars}</strong> caracteres
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => setScript('')}
-                  className="text-zinc-500 hover:text-red-400 transition-colors cursor-pointer text-xs"
-                >
-                  Limpar texto
-                </button>
-              </div>
-            </div>
-
-            {/* Botão de Avanço estilo Apple */}
-            <div className="flex justify-end pt-2">
               <button
-                onClick={() => setCurrentStep('settings')}
-                className="flex items-center gap-2 px-6 py-3 rounded-full bg-white text-black font-semibold text-sm hover:bg-zinc-200 active:scale-95 transition-all shadow-lg cursor-pointer"
+                onClick={() => {
+                  triggerHaptic(10);
+                  setScript('');
+                }}
+                className="text-zinc-500 hover:text-red-400 text-xs py-1 px-2 cursor-pointer transition-colors"
               >
-                <span>Configurar Câmera e Estúdio</span>
-                <ArrowRight className="w-4 h-4" />
+                Limpar
               </button>
             </div>
           </div>
-        </main>
-      )}
 
-      {/* ============================================================== */}
-      {/* ETAPA 2: AJUSTES & ESTÚDIO (CONTROLES AGRUPADOS + SIMULADOR AO VIVO) */}
-      {/* ============================================================== */}
-      {currentStep === 'settings' && (
-        <main className="flex-1 max-w-6xl w-full mx-auto p-4 md:p-8 animate-in fade-in duration-300">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Coluna Esquerda: Cartões de Ajustes estilo iOS */}
-            <div className="lg:col-span-7 flex flex-col gap-6">
-              <div>
-                <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-white">
-                  Ajustes de Leitura
-                </h2>
-                <p className="text-xs text-zinc-400 mt-1">
-                  Defina a velocidade ideal da sua fala e o modo de espelhamento óptico.
-                </p>
-              </div>
-
-              {/* Grupo 1: Velocidade da Fala */}
-              <div className="apple-glass-card rounded-2xl p-5 flex flex-col gap-4">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <Gauge className="w-4 h-4 text-zinc-300" />
-                    <span className="text-sm font-semibold text-white">Velocidade de Rolagem</span>
-                  </div>
-                  <span className="font-mono text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white font-bold">
-                    Nível {settings.speed}x
-                  </span>
-                </div>
-
-                {/* Segmented presets rápidos */}
-                <div className="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-zinc-950/80 border border-white/[0.04]">
-                  {[
-                    { label: 'Calmo', val: 2 },
-                    { label: 'Padrão', val: 3 },
-                    { label: 'Ágil', val: 5 },
-                    { label: 'Rápido', val: 7 },
-                  ].map((preset) => (
-                    <button
-                      key={preset.label}
-                      onClick={() => setSettings({ ...settings, speed: preset.val })}
-                      className={`text-xs py-1.5 rounded-lg transition-all cursor-pointer font-medium ${
-                        settings.speed === preset.val
-                          ? 'apple-pill-active text-white font-semibold'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={settings.speed}
-                  onChange={(e) => setSettings({ ...settings, speed: Number(e.target.value) })}
-                  className="w-full accent-white cursor-pointer h-1.5 bg-zinc-800 rounded-lg appearance-none"
-                />
-              </div>
-
-              {/* Grupo 2: Tamanho da Fonte & Tipografia */}
-              <div className="apple-glass-card rounded-2xl p-5 flex flex-col gap-4">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <Type className="w-4 h-4 text-zinc-300" />
-                    <span className="text-sm font-semibold text-white">Tamanho das Letras</span>
-                  </div>
-                  <span className="font-mono text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white font-bold">
-                    {settings.fontSize}px
-                  </span>
-                </div>
-
-                {/* Segmented presets rápidos */}
-                <div className="grid grid-cols-4 gap-1.5 p-1 rounded-xl bg-zinc-950/80 border border-white/[0.04]">
-                  {[
-                    { label: 'Pequeno', val: 36 },
-                    { label: 'Médio', val: 48 },
-                    { label: 'Grande', val: 64 },
-                    { label: 'Extra', val: 80 },
-                  ].map((preset) => (
-                    <button
-                      key={preset.label}
-                      onClick={() => setSettings({ ...settings, fontSize: preset.val })}
-                      className={`text-xs py-1.5 rounded-lg transition-all cursor-pointer font-medium ${
-                        settings.fontSize === preset.val
-                          ? 'apple-pill-active text-white font-semibold'
-                          : 'text-zinc-400 hover:text-zinc-200'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-
-                <input
-                  type="range"
-                  min="24"
-                  max="96"
-                  value={settings.fontSize}
-                  onChange={(e) => setSettings({ ...settings, fontSize: Number(e.target.value) })}
-                  className="w-full accent-white cursor-pointer h-1.5 bg-zinc-800 rounded-lg appearance-none"
-                />
-              </div>
-
-              {/* Grupo 3: Espelhamento Óptico (Vidro e Suporte) */}
-              <div className="apple-glass-card rounded-2xl p-5 flex flex-col gap-3">
-                <span className="text-sm font-semibold text-white">Espelhamento Óptico para Vidro</span>
-                <p className="text-xs text-zinc-400">
-                  Ative se estiver gravando através de vidro reflexivo (Beam Splitter) ou suporte de câmera.
-                </p>
-
-                <div className="grid grid-cols-2 gap-3 pt-2">
-                  <button
-                    onClick={() => setSettings({ ...settings, mirrorHorizontal: !settings.mirrorHorizontal })}
-                    className={`flex items-center justify-center gap-2 text-xs py-2.5 px-3 rounded-xl border transition-all cursor-pointer ${
-                      settings.mirrorHorizontal
-                        ? 'bg-white text-black font-semibold border-white shadow-sm'
-                        : 'bg-white/[0.03] border-white/[0.08] text-zinc-300 hover:bg-white/[0.06]'
-                    }`}
-                  >
-                    <FlipHorizontal className="w-4 h-4" />
-                    <span>Espelho Horizontal {settings.mirrorHorizontal ? '✓' : ''}</span>
-                  </button>
-
-                  <button
-                    onClick={() => setSettings({ ...settings, mirrorVertical: !settings.mirrorVertical })}
-                    className={`flex items-center justify-center gap-2 text-xs py-2.5 px-3 rounded-xl border transition-all cursor-pointer ${
-                      settings.mirrorVertical
-                        ? 'bg-white text-black font-semibold border-white shadow-sm'
-                        : 'bg-white/[0.03] border-white/[0.08] text-zinc-300 hover:bg-white/[0.06]'
-                    }`}
-                  >
-                    <FlipVertical className="w-4 h-4" />
-                    <span>Espelho Vertical {settings.mirrorVertical ? '✓' : ''}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Grupo 4: Guias, Largura e Cores */}
-              <div className="apple-glass-card rounded-2xl p-5 flex flex-col gap-4">
-                <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
-                  <div className="flex items-center gap-2">
-                    <Eye className="w-4 h-4 text-zinc-300" />
-                    <div>
-                      <div className="text-sm font-semibold text-white">Linha Guia de Olhar</div>
-                      <div className="text-[11px] text-zinc-400">Marcador óptico alinhado com a lente</div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setSettings({ ...settings, guideLine: !settings.guideLine })}
-                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer ${
-                      settings.guideLine ? 'bg-white' : 'bg-zinc-800'
-                    }`}
-                  >
-                    <span
-                      className={`block w-5 h-5 rounded-full transition-transform absolute top-0.5 ${
-                        settings.guideLine ? 'translate-x-5 bg-black' : 'translate-x-0.5 bg-zinc-400'
-                      }`}
-                    />
-                  </button>
-                </div>
-
-                {/* Faixa de Leitura & Alinhamento */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col gap-2">
-                    <span className="text-xs text-zinc-400">Largura da Leitura</span>
-                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-zinc-950/80 border border-white/[0.04]">
-                      {[
-                        { label: 'Estreita', val: 620 },
-                        { label: 'Média', val: 850 },
-                        { label: 'Larga', val: 1100 },
-                      ].map((w) => (
-                        <button
-                          key={w.label}
-                          onClick={() => setSettings({ ...settings, maxWidth: w.val })}
-                          className={`text-xs py-1 rounded-lg transition-all cursor-pointer ${
-                            settings.maxWidth === w.val
-                              ? 'apple-pill-active text-white font-semibold'
-                              : 'text-zinc-400 hover:text-zinc-200'
-                          }`}
-                        >
-                          {w.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    <span className="text-xs text-zinc-400">Alinhamento</span>
-                    <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-zinc-950/80 border border-white/[0.04]">
-                      {[
-                        { id: 'left', icon: AlignLeft },
-                        { id: 'center', icon: AlignCenter },
-                        { id: 'justify', icon: AlignJustify },
-                      ].map((item) => {
-                        const Icon = item.icon;
-                        return (
-                          <button
-                            key={item.id}
-                            onClick={() => setSettings({ ...settings, textAlign: item.id as any })}
-                            className={`flex items-center justify-center py-1 rounded-lg transition-all cursor-pointer ${
-                              settings.textAlign === item.id
-                                ? 'apple-pill-active text-white'
-                                : 'text-zinc-400 hover:text-zinc-200'
-                            }`}
-                          >
-                            <Icon className="w-3.5 h-3.5" />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Cor do Texto de Alto Contraste */}
-                <div className="flex items-center justify-between pt-2">
-                  <span className="text-xs text-zinc-400">Cor do Texto</span>
-                  <div className="flex items-center gap-2">
-                    {textColors.map((c) => (
-                      <button
-                        key={c.value}
-                        onClick={() => setSettings({ ...settings, textColor: c.value })}
-                        style={{ backgroundColor: c.value }}
-                        title={c.label}
-                        className={`w-6 h-6 rounded-full border-2 transition-transform cursor-pointer ${
-                          settings.textColor === c.value ? 'scale-125 border-white ring-2 ring-white/20' : 'border-transparent opacity-60 hover:opacity-100'
-                        }`}
-                      />
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Coluna Direita: Simulador de Enquadramento em Tempo Real */}
-            <div className="lg:col-span-5 flex flex-col gap-4 sticky top-24">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Pré-visualização do Visor
-                </span>
-                <button
-                  onClick={() => setIsPreviewScrolling(!isPreviewScrolling)}
-                  className="text-xs flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 hover:bg-white/20 text-zinc-200 transition-all cursor-pointer"
-                >
-                  {isPreviewScrolling ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                  <span>{isPreviewScrolling ? 'Pausar Teste' : 'Testar Rolagem'}</span>
-                </button>
-              </div>
-
-              {/* Moldura do Dispositivo / Simulador de Vidro */}
-              <div className="w-full h-[460px] rounded-3xl bg-[#09090b] border border-white/[0.1] shadow-2xl relative overflow-hidden flex flex-col">
-                {/* Dynamic Island / Câmera superior simulada */}
-                <div className="w-full h-8 bg-zinc-950/80 border-b border-white/[0.04] flex items-center justify-center relative">
-                  <div className="w-20 h-3 rounded-full bg-black border border-white/[0.08]" />
-                </div>
-
-                {/* Linha guia no simulador */}
-                {settings.guideLine && (
-                  <div
-                    className="absolute left-0 right-0 pointer-events-none z-10 flex items-center justify-between px-3"
-                    style={{ top: '38%', transform: 'translateY(-50%)' }}
-                  >
-                    <div className="w-2.5 h-2.5 border-l border-b border-indigo-400/80 -rotate-45" />
-                    <div className="flex-1 mx-2 h-[1px] bg-indigo-500/30" />
-                    <div className="w-2.5 h-2.5 border-r border-t border-indigo-400/80 -rotate-45" />
-                  </div>
-                )}
-
-                {/* Conteúdo com os efeitos visuais reais aplicados */}
-                <div
-                  ref={previewScrollRef}
-                  className="flex-1 overflow-y-auto teleprompter-scroller p-6"
-                  style={{
-                    paddingTop: '35%',
-                    paddingBottom: '50%',
-                  }}
-                >
-                  <div
-                    className={`transition-transform duration-200 ${
-                      settings.mirrorHorizontal && settings.mirrorVertical
-                        ? 'mirror-both'
-                        : settings.mirrorHorizontal
-                        ? 'mirror-h'
-                        : settings.mirrorVertical
-                        ? 'mirror-v'
-                        : ''
-                    }`}
-                    style={{
-                      fontSize: `${Math.round(settings.fontSize * 0.45)}px`,
-                      lineHeight: settings.lineHeight,
-                      color: settings.textColor,
-                      textAlign: settings.textAlign,
-                    }}
-                  >
-                    {script.split('\n').map((p, i) => (
-                      <p key={i} className="mb-4">
-                        {p || '\u00A0'}
-                      </p>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Rodapé da moldura */}
-                <div className="p-3 bg-zinc-950/90 border-t border-white/[0.06] text-center text-[11px] text-zinc-400">
-                  {settings.mirrorHorizontal ? 'Espelho Horizontal Ativo' : 'Visão Direta Padrão'} • {settings.speed}x
-                </div>
-              </div>
-
-              {/* Botão de Gravar em Destaque */}
-              <button
-                onClick={startRecording}
-                className="w-full py-3.5 rounded-full bg-white text-black font-bold text-sm hover:bg-zinc-200 active:scale-98 transition-all shadow-[0_0_30px_rgba(255,255,255,0.25)] flex items-center justify-center gap-2 cursor-pointer mt-2"
-              >
-                <Play className="w-4 h-4 fill-current text-black" />
-                <span>Iniciar Gravação Ao Vivo</span>
-              </button>
-            </div>
+          {/* Botão de Ação Primária Apple (Leva para Câmera) */}
+          <div className="mt-5">
+            <button
+              onClick={() => {
+                triggerHaptic(25);
+                setActiveTab('record');
+              }}
+              className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-base hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer min-h-[50px]"
+            >
+              <span>Abrir Câmera e Gravar</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
-        </main>
+        </div>
       )}
 
       {/* ============================================================== */}
-      {/* ETAPA 3: GRAVAÇÃO AO VIVO (VISÃO CINEMÁTICA PURA + APPLE HUD) */}
+      {/* ABA 2: CÂMERA & GRAVAÇÃO AO VIVO (COM VÍDEO REAL & PROMPTER) */}
       {/* ============================================================== */}
-      {currentStep === 'prompter' && (
-        <div className="fixed inset-0 w-screen h-screen bg-[#000000] overflow-hidden flex flex-col z-50">
-          {/* Contagem regressiva minimalista */}
-          {countdown !== null && (
-            <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/90 backdrop-blur-md">
-              <div className="text-center animate-pulse">
-                <div className="text-9xl font-black text-white tracking-tighter">
-                  {countdown === 0 ? 'GO!' : countdown}
-                </div>
-                <p className="text-zinc-400 text-sm mt-4 tracking-wide uppercase font-medium">
-                  Inspire e comece a falar
-                </p>
+      {activeTab === 'record' && (
+        <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden flex flex-col z-30">
+          {/* Câmera em Segundo Plano (Live Video Feed) */}
+          <video
+            ref={videoPreviewRef}
+            autoPlay
+            playsInline
+            muted
+            className={`absolute inset-0 w-full h-full object-cover transition-transform duration-300 ${
+              settings.cameraFacing === 'user' ? 'scale-x-[-1]' : ''
+            }`}
+          />
+
+          {/* Película de Fundo Escurecida com Opacidade Ajustável */}
+          <div
+            className="absolute inset-0 pointer-events-none transition-opacity duration-300"
+            style={{ backgroundColor: `rgba(0, 0, 0, ${settings.overlayOpacity})` }}
+          />
+
+          {/* Alerta caso câmera não esteja disponível */}
+          {cameraError && (
+            <div className="absolute top-16 left-4 right-4 z-40 p-4 rounded-2xl bg-red-950/90 border border-red-500/40 text-white text-xs flex items-start gap-3 backdrop-blur-xl">
+              <CircleAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <strong className="block font-semibold mb-1">Acesso à Câmera Bloqueado</strong>
+                {cameraError}
               </div>
             </div>
           )}
 
-          {/* Marcador de Olhar / Linha Guia de Alta Precisão */}
+          {/* Top Bar da Câmera (Safe Area Top + SF Symbols) */}
+          <div className="absolute top-0 left-0 right-0 z-30 safe-top px-4 py-3 flex items-center justify-between pointer-events-auto">
+            {/* Indicador de Gravação / Tempo */}
+            <div className="flex items-center gap-2">
+              {isRecording ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-600/90 backdrop-blur-md text-white font-mono text-xs font-bold shadow-lg animate-pulse">
+                  <span className="w-2 h-2 rounded-full bg-white" />
+                  <span>REC {formattedRecordTime}</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/50 backdrop-blur-md border border-white/10 text-white text-xs font-medium">
+                  <Clock className="w-3.5 h-3.5 text-zinc-400" />
+                  <span>{stats.duration} de leitura</span>
+                </div>
+              )}
+            </div>
+
+            {/* Ações Rápidas no Topo */}
+            <div className="flex items-center gap-2">
+              {/* Alternar Câmera Frontal / Traseira */}
+              <button
+                onClick={toggleCameraFacing}
+                title="Inverter Câmera"
+                className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center hover:bg-black/80 active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+              >
+                <SwitchCamera className="w-4 h-4" />
+              </button>
+
+              {/* Ajustes Rápidos no Estúdio */}
+              <button
+                onClick={() => {
+                  triggerHaptic(15);
+                  setShowQuickSettingsSheet(true);
+                }}
+                title="Ajustes da Faixa de Leitura"
+                className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center hover:bg-black/80 active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+              >
+                <Sliders className="w-4 h-4" />
+              </button>
+
+              {/* Fullscreen */}
+              <button
+                onClick={toggleFullscreen}
+                title="Tela Cheia"
+                className="w-10 h-10 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-white flex items-center justify-center hover:bg-black/80 active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+              >
+                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Marcador Óptico de Olhar (Linha Guia Apple) */}
           {settings.guideLine && (
             <div
-              className="absolute left-0 right-0 pointer-events-none z-20 flex items-center justify-between px-8"
-              style={{ top: '38%', transform: 'translateY(-50%)' }}
+              className="absolute left-0 right-0 pointer-events-none z-20 flex items-center justify-between px-6"
+              style={{ top: '35%', transform: 'translateY(-50%)' }}
             >
-              <div className="w-4 h-4 border-l-2 border-b-2 border-white/60 -rotate-45" />
-              <div className="flex-1 mx-6 h-[1.5px] bg-gradient-to-r from-transparent via-white/30 to-transparent" />
-              <div className="w-4 h-4 border-r-2 border-t-2 border-white/60 -rotate-45" />
+              <div className="w-3 h-3 border-l-2 border-b-2 border-white/70 -rotate-45" />
+              <div className="flex-1 mx-4 h-[1.5px] bg-gradient-to-r from-transparent via-white/40 to-transparent" />
+              <div className="w-3 h-3 border-r-2 border-t-2 border-white/70 -rotate-45" />
             </div>
           )}
 
-          {/* Área Rolante do Texto */}
+          {/* Contagem Regressiva 3-2-1 */}
+          {countdown !== null && (
+            <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-md">
+              <div className="text-center animate-pulse">
+                <div className="text-9xl font-black text-white tracking-tighter">
+                  {countdown === 0 ? 'FALE!' : countdown}
+                </div>
+                <p className="text-zinc-300 text-sm mt-4 font-medium uppercase tracking-wider">
+                  Câmera ligada e gravando...
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Área Rolante do Teleprompter Sobre a Câmera */}
           <div
             ref={scrollContainerRef}
-            className="flex-1 w-full h-full overflow-y-auto teleprompter-scroller relative"
+            className="flex-1 w-full h-full overflow-y-auto teleprompter-scroller relative z-20"
             style={{
-              paddingTop: '38vh',
-              paddingBottom: '60vh',
+              paddingTop: '35vh',
+              paddingBottom: '55vh',
             }}
           >
             <div
-              className={`mx-auto px-8 transition-transform duration-200 ${
+              className={`mx-auto px-6 transition-transform duration-200 ${
                 settings.mirrorHorizontal && settings.mirrorVertical
                   ? 'mirror-both'
                   : settings.mirrorHorizontal
@@ -766,120 +560,515 @@ export default function App() {
                 lineHeight: settings.lineHeight,
                 color: settings.textColor,
                 textAlign: settings.textAlign,
+                textShadow: '0 2px 10px rgba(0, 0, 0, 0.95), 0 0 20px rgba(0,0,0,0.8)',
               }}
             >
               {script.split('\n').map((paragraph, idx) => (
-                <p key={idx} className="mb-10 font-medium tracking-normal select-none">
+                <p key={idx} className="mb-8 font-semibold select-none">
                   {paragraph || '\u00A0'}
                 </p>
               ))}
             </div>
           </div>
 
-          {/* Barra Flutuante Apple Dynamic Capsule (HUD) */}
-          <div
-            className={`fixed bottom-8 left-1/2 -translate-x-1/2 z-30 transition-all duration-300 ${
-              controlsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6 pointer-events-none'
+          {/* Shutter & Controles Inferiores Apple (Bottom HUD) */}
+          <div className="absolute bottom-6 left-0 right-0 z-30 safe-bottom px-6 flex items-center justify-around pointer-events-auto">
+            {/* Botão de Pausar / Rolar o Texto */}
+            <button
+              onClick={() => {
+                triggerHaptic(15);
+                setIsPrompterPlaying(!isPrompterPlaying);
+              }}
+              title={isPrompterPlaying ? 'Pausar Rolagem' : 'Iniciar Rolagem'}
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+            >
+              {isPrompterPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+            </button>
+
+            {/* BOTÃO PRINCIPAL DE GRAVAÇÃO (Apple Camera Shutter) */}
+            <div className="flex flex-col items-center">
+              <button
+                onClick={isRecording ? stopRecording : startRecordingFlow}
+                className={`ios-record-button ${isRecording ? 'recording' : ''}`}
+                title={isRecording ? 'Parar Gravação' : 'Iniciar Gravação de Vídeo'}
+              >
+                <div className="ios-record-inner" />
+              </button>
+              <span className="text-[11px] font-medium text-zinc-300 mt-2 bg-black/50 px-2 py-0.5 rounded-full backdrop-blur-md">
+                {isRecording ? 'Toque para Finalizar' : 'Gravar Vídeo'}
+              </span>
+            </div>
+
+            {/* Reiniciar Texto ao Topo */}
+            <button
+              onClick={() => {
+                triggerHaptic(15);
+                if (scrollContainerRef.current) {
+                  scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }}
+              title="Voltar ao início do roteiro"
+              className="w-12 h-12 rounded-full bg-black/60 backdrop-blur-xl border border-white/20 text-white flex items-center justify-center active:scale-95 transition-all cursor-pointer min-h-[44px] min-w-[44px]"
+            >
+              <RotateCcw className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* ABA 3: AJUSTES DO ESTÚDIO (APPLE INSET GROUPED LISTS) */}
+      {/* ============================================================== */}
+      {activeTab === 'settings' && (
+        <div className="flex-1 max-w-3xl w-full mx-auto px-4 safe-top tabbar-padding animate-in fade-in duration-200">
+          <header className="pt-4 pb-5">
+            <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93]">
+              Preferências
+            </span>
+            <h1 className="text-3xl md:text-4xl font-bold tracking-tight text-white mt-0.5">
+              Ajustes do Estúdio
+            </h1>
+          </header>
+
+          <div className="flex flex-col gap-6">
+            {/* Seção 1: Câmera e Gravação */}
+            <div>
+              <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93] px-3 mb-2 block">
+                Câmera & Vídeo
+              </span>
+              <div className="ios-inset-group">
+                {/* Câmera Frontal / Traseira */}
+                <div className="ios-row">
+                  <div>
+                    <div className="text-sm font-medium text-white">Posição da Câmera</div>
+                    <div className="text-xs text-[#8e8e93]">Alternar entre selfie e câmera principal</div>
+                  </div>
+                  <button
+                    onClick={toggleCameraFacing}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-full bg-white/10 text-white hover:bg-white/20 transition-all cursor-pointer min-h-[44px] flex items-center gap-1.5"
+                  >
+                    <SwitchCamera className="w-3.5 h-3.5" />
+                    <span>{settings.cameraFacing === 'user' ? 'Frontal (Selfie)' : 'Traseira'}</span>
+                  </button>
+                </div>
+
+                {/* Gravar Áudio */}
+                <div className="ios-row">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded-lg bg-red-500/20 text-red-400 flex items-center justify-center">
+                      {settings.audioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-white">Gravar Microfone</div>
+                      <div className="text-xs text-[#8e8e93]">Captura de voz junto ao vídeo</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerHaptic(15);
+                      setSettings((s) => ({ ...s, audioEnabled: !s.audioEnabled }));
+                    }}
+                    className={`ios-switch ${settings.audioEnabled ? 'active' : ''}`}
+                  >
+                    <div className="ios-switch-knob" />
+                  </button>
+                </div>
+
+                {/* Opacidade do Fundo Escuro Sobre a Câmera */}
+                <div className="ios-row flex-col items-start gap-2 py-3">
+                  <div className="flex justify-between w-full items-center">
+                    <div className="text-sm font-medium text-white flex items-center gap-2">
+                      <Layers className="w-4 h-4 text-zinc-400" />
+                      <span>Contraste da Faixa de Leitura</span>
+                    </div>
+                    <span className="text-xs font-mono text-zinc-400">
+                      {Math.round(settings.overlayOpacity * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.1"
+                    max="0.85"
+                    step="0.05"
+                    value={settings.overlayOpacity}
+                    onChange={(e) => setSettings({ ...settings, overlayOpacity: Number(e.target.value) })}
+                    className="w-full accent-white cursor-pointer h-1.5 bg-zinc-800 rounded-lg appearance-none mt-1"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Seção 2: Ritmo & Leitura */}
+            <div>
+              <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93] px-3 mb-2 block">
+                Leitura & Ritmo
+              </span>
+              <div className="ios-inset-group">
+                {/* Velocidade de Rolagem */}
+                <div className="ios-row flex-col items-start gap-2 py-3">
+                  <div className="flex justify-between w-full items-center">
+                    <div className="text-sm font-medium text-white flex items-center gap-2">
+                      <Gauge className="w-4 h-4 text-amber-400" />
+                      <span>Velocidade de Rolagem</span>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full">
+                      {settings.speed}x
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 w-full mt-1">
+                    {[
+                      { label: 'Calmo', val: 2 },
+                      { label: 'Normal', val: 3 },
+                      { label: 'Ágil', val: 5 },
+                      { label: 'Rápido', val: 7 },
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        onClick={() => {
+                          triggerHaptic(10);
+                          setSettings({ ...settings, speed: p.val });
+                        }}
+                        className={`text-xs py-2 rounded-xl transition-all cursor-pointer font-medium min-h-[44px] flex items-center justify-center ${
+                          settings.speed === p.val
+                            ? 'bg-white text-black font-semibold shadow-sm'
+                            : 'bg-white/5 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tamanho da Fonte */}
+                <div className="ios-row flex-col items-start gap-2 py-3">
+                  <div className="flex justify-between w-full items-center">
+                    <div className="text-sm font-medium text-white flex items-center gap-2">
+                      <Type className="w-4 h-4 text-blue-400" />
+                      <span>Tamanho da Fonte</span>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-white bg-white/10 px-2 py-0.5 rounded-full">
+                      {settings.fontSize}px
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 w-full mt-1">
+                    {[
+                      { label: 'P', val: 32 },
+                      { label: 'M', val: 40 },
+                      { label: 'G', val: 52 },
+                      { label: 'GG', val: 68 },
+                    ].map((p) => (
+                      <button
+                        key={p.label}
+                        onClick={() => {
+                          triggerHaptic(10);
+                          setSettings({ ...settings, fontSize: p.val });
+                        }}
+                        className={`text-xs py-2 rounded-xl transition-all cursor-pointer font-medium min-h-[44px] flex items-center justify-center ${
+                          settings.fontSize === p.val
+                            ? 'bg-white text-black font-semibold shadow-sm'
+                            : 'bg-white/5 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Seção 3: Espelhamento Óptico para Vidro */}
+            <div>
+              <span className="text-xs uppercase tracking-wider font-semibold text-[#8e8e93] px-3 mb-2 block">
+                Vidro Óptico (Beam Splitter)
+              </span>
+              <div className="ios-inset-group">
+                <div className="ios-row">
+                  <div>
+                    <div className="text-sm font-medium text-white">Espelho Horizontal</div>
+                    <div className="text-xs text-[#8e8e93]">Inverte para leitura em vidro de teleprompter físico</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerHaptic(15);
+                      setSettings((s) => ({ ...s, mirrorHorizontal: !s.mirrorHorizontal }));
+                    }}
+                    className={`ios-switch ${settings.mirrorHorizontal ? 'active' : ''}`}
+                  >
+                    <div className="ios-switch-knob" />
+                  </button>
+                </div>
+
+                <div className="ios-row">
+                  <div>
+                    <div className="text-sm font-medium text-white">Linha Guia de Olhar</div>
+                    <div className="text-xs text-[#8e8e93]">Marcador visual alinhado à lente da câmera</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      triggerHaptic(15);
+                      setSettings((s) => ({ ...s, guideLine: !s.guideLine }));
+                    }}
+                    className={`ios-switch ${settings.guideLine ? 'active' : ''}`}
+                  >
+                    <div className="ios-switch-knob" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* APPLE TRANSLUCENT TAB BAR (83pt iOS Standard Pinned at Bottom) */}
+      {/* ============================================================== */}
+      {activeTab !== 'record' && (
+        <nav className="ios-tab-bar">
+          <button
+            onClick={() => {
+              triggerHaptic(10);
+              setActiveTab('script');
+            }}
+            className={`flex flex-col items-center justify-center gap-1 transition-all cursor-pointer min-h-[44px] min-w-[64px] ${
+              activeTab === 'script' ? 'text-white' : 'text-[#8e8e93] hover:text-zinc-300'
             }`}
           >
-            <div className="flex items-center gap-3 apple-glass px-4 py-2 rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.8)] border border-white/10">
-              {/* Voltar aos Ajustes */}
+            <FileText className="w-5 h-5 stroke-[2]" />
+            <span className="text-[11px] font-medium">Roteiro</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic(20);
+              setActiveTab('record');
+            }}
+            className="flex flex-col items-center justify-center gap-1 text-white transition-all cursor-pointer min-h-[44px] min-w-[64px] active:scale-95"
+          >
+            <div className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+              <Video className="w-5 h-5 fill-current" />
+            </div>
+            <span className="text-[11px] font-semibold text-white">Gravar</span>
+          </button>
+
+          <button
+            onClick={() => {
+              triggerHaptic(10);
+              setActiveTab('settings');
+            }}
+            className={`flex flex-col items-center justify-center gap-1 transition-all cursor-pointer min-h-[44px] min-w-[64px] ${
+              activeTab === 'settings' ? 'text-white' : 'text-[#8e8e93] hover:text-zinc-300'
+            }`}
+          >
+            <Sliders className="w-5 h-5 stroke-[2]" />
+            <span className="text-[11px] font-medium">Ajustes</span>
+          </button>
+        </nav>
+      )}
+
+      {/* ============================================================== */}
+      {/* BOTTOM SHEET 1: MODELOS DE ROTEIRO (APPLE ACTION SHEET) */}
+      {/* ============================================================== */}
+      {showTemplatesSheet && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div
+            className="fixed inset-0"
+            onClick={() => setShowTemplatesSheet(false)}
+          />
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+            <div className="ios-sheet-handle" />
+            <div className="flex items-center justify-between pb-4">
+              <div>
+                <h3 className="text-xl font-bold text-white">Modelos Prontos</h3>
+                <p className="text-xs text-[#8e8e93]">Escolha um roteiro para carregar no editor</p>
+              </div>
               <button
-                onClick={() => {
-                  setCurrentStep('settings');
-                  setIsPlaying(false);
-                }}
-                title="Voltar aos Ajustes (Esc)"
-                className="p-2 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                onClick={() => setShowTemplatesSheet(false)}
+                className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-zinc-400 hover:text-white cursor-pointer min-h-[44px] min-w-[44px]"
               >
                 <X className="w-4 h-4" />
               </button>
+            </div>
 
-              <div className="h-5 w-[1px] bg-white/10" />
+            <div className="flex flex-col gap-2.5 mt-2">
+              {TEMPLATES.map((tpl) => (
+                <button
+                  key={tpl.id}
+                  onClick={() => {
+                    triggerHaptic(15);
+                    setScript(tpl.content);
+                    setShowTemplatesSheet(false);
+                  }}
+                  className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-left transition-all cursor-pointer min-h-[44px] active:scale-[0.98]"
+                >
+                  <div>
+                    <div className="text-sm font-semibold text-white">{tpl.title}</div>
+                    <div className="text-xs text-zinc-400 line-clamp-1 mt-0.5">{tpl.content}</div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-zinc-500" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
-              {/* Botão Play / Pause Principal */}
+      {/* ============================================================== */}
+      {/* BOTTOM SHEET 2: EXPORTAR / REVER VÍDEO GRAVADO (APPLE MODAL) */}
+      {/* ============================================================== */}
+      {showExportSheet && recordedVideoUrl && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+            <div className="ios-sheet-handle" />
+            <div className="flex items-center justify-between pb-3">
+              <div>
+                <h3 className="text-xl font-bold text-white">Vídeo Gravado</h3>
+                <p className="text-xs text-[#8e8e93]">Duração: {formattedRecordTime}</p>
+              </div>
               <button
-                onClick={() => setIsPlaying(!isPlaying)}
-                title="Reproduzir / Pausar (Espaço)"
-                className={`p-3 rounded-full transition-all cursor-pointer shadow-lg active:scale-95 ${
-                  isPlaying
-                    ? 'bg-amber-400 hover:bg-amber-300 text-black'
-                    : 'bg-white hover:bg-zinc-200 text-black'
-                }`}
+                onClick={() => setShowExportSheet(false)}
+                className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-zinc-400 hover:text-white cursor-pointer min-h-[44px] min-w-[44px]"
               >
-                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Player de Prévia do Vídeo Gravado */}
+            <div className="w-full h-64 rounded-2xl bg-black border border-white/15 overflow-hidden my-3 relative shadow-inner">
+              <video
+                src={recordedVideoUrl}
+                controls
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+            </div>
+
+            {/* Ações de Download e Compartilhar */}
+            <div className="flex flex-col gap-2.5 mt-4">
+              <button
+                onClick={handleDownloadVideo}
+                className="w-full py-4 rounded-2xl bg-white text-black font-semibold text-sm hover:bg-zinc-200 active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2 cursor-pointer min-h-[48px]"
+              >
+                <Download className="w-4 h-4" />
+                <span>Salvar Vídeo no Aparelho</span>
               </button>
 
+              <button
+                onClick={handleShareVideo}
+                className="w-full py-3.5 rounded-2xl bg-white/10 text-white font-medium text-sm hover:bg-white/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer min-h-[48px]"
+              >
+                <Share2 className="w-4 h-4" />
+                <span>Compartilhar (AirDrop / Mensagens)</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  triggerHaptic(10);
+                  setShowExportSheet(false);
+                  if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
+                }}
+                className="text-xs text-zinc-400 hover:text-white py-2 transition-colors cursor-pointer"
+              >
+                Gravar Novamente
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* BOTTOM SHEET 3: AJUSTES RÁPIDOS NA TELA DA CÂMERA */}
+      {/* ============================================================== */}
+      {showQuickSettingsSheet && (
+        <div className="fixed inset-0 z-50 flex flex-col justify-end bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div
+            className="fixed inset-0"
+            onClick={() => setShowQuickSettingsSheet(false)}
+          />
+          <div className="ios-bottom-sheet w-full max-w-lg mx-auto p-6 z-10 animate-in slide-in-from-bottom duration-300 safe-bottom">
+            <div className="ios-sheet-handle" />
+            <div className="flex items-center justify-between pb-4">
+              <h3 className="text-xl font-bold text-white">Ajustes Rápidos de Leitura</h3>
+              <button
+                onClick={() => setShowQuickSettingsSheet(false)}
+                className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-zinc-400 hover:text-white cursor-pointer min-h-[44px] min-w-[44px]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-4">
               {/* Velocidade Stepper */}
-              <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-white/[0.05] border border-white/[0.05]">
-                <button
-                  onClick={() => setSettings((s) => ({ ...s, speed: Math.max(1, s.speed - 1) }))}
-                  className="px-1.5 py-0.5 text-xs text-zinc-400 hover:text-white cursor-pointer font-bold"
-                >
-                  -
-                </button>
-                <span className="text-xs font-mono font-semibold text-white min-w-[28px] text-center">
-                  {settings.speed}x
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
+                <span className="text-sm font-medium text-white flex items-center gap-2">
+                  <Gauge className="w-4 h-4 text-amber-400" /> Velocidade: {settings.speed}x
                 </span>
-                <button
-                  onClick={() => setSettings((s) => ({ ...s, speed: Math.min(10, s.speed + 1) }))}
-                  className="px-1.5 py-0.5 text-xs text-zinc-400 hover:text-white cursor-pointer font-bold"
-                >
-                  +
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      triggerHaptic(10);
+                      setSettings((s) => ({ ...s, speed: Math.max(1, s.speed - 1) }));
+                    }}
+                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
+                  >
+                    -
+                  </button>
+                  <button
+                    onClick={() => {
+                      triggerHaptic(10);
+                      setSettings((s) => ({ ...s, speed: Math.min(10, s.speed + 1) }));
+                    }}
+                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-base flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
+                  >
+                    +
+                  </button>
+                </div>
               </div>
 
               {/* Tamanho Stepper */}
-              <div className="flex items-center gap-1 px-2 py-1 rounded-full bg-white/[0.05] border border-white/[0.05]">
-                <button
-                  onClick={() => setSettings((s) => ({ ...s, fontSize: Math.max(24, s.fontSize - 4) }))}
-                  className="px-1.5 py-0.5 text-xs text-zinc-400 hover:text-white cursor-pointer font-bold"
-                >
-                  A-
-                </button>
-                <span className="text-xs font-mono font-semibold text-white min-w-[30px] text-center">
-                  {settings.fontSize}
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
+                <span className="text-sm font-medium text-white flex items-center gap-2">
+                  <Type className="w-4 h-4 text-blue-400" /> Tamanho: {settings.fontSize}px
                 </span>
-                <button
-                  onClick={() => setSettings((s) => ({ ...s, fontSize: Math.min(96, s.fontSize + 4) }))}
-                  className="px-1.5 py-0.5 text-xs text-zinc-400 hover:text-white cursor-pointer font-bold"
-                >
-                  +
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      triggerHaptic(10);
+                      setSettings((s) => ({ ...s, fontSize: Math.max(24, s.fontSize - 4) }));
+                    }}
+                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-sm flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
+                  >
+                    A-
+                  </button>
+                  <button
+                    onClick={() => {
+                      triggerHaptic(10);
+                      setSettings((s) => ({ ...s, fontSize: Math.min(84, s.fontSize + 4) }));
+                    }}
+                    className="w-10 h-10 rounded-full bg-white/10 text-white font-bold text-sm flex items-center justify-center cursor-pointer min-h-[44px] min-w-[44px]"
+                  >
+                    A+
+                  </button>
+                </div>
               </div>
 
-              {/* Reiniciar */}
-              <button
-                onClick={() => {
-                  if (scrollContainerRef.current) {
-                    scrollContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
-                  }
-                }}
-                title="Voltar ao Início (R)"
-                className="p-2 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-
               {/* Espelho Horizontal */}
-              <button
-                onClick={() => setSettings((s) => ({ ...s, mirrorHorizontal: !s.mirrorHorizontal }))}
-                title="Espelho Horizontal (M)"
-                className={`p-2 rounded-full transition-colors cursor-pointer ${
-                  settings.mirrorHorizontal ? 'bg-white text-black' : 'hover:bg-white/10 text-zinc-400 hover:text-white'
-                }`}
-              >
-                <FlipHorizontal className="w-4 h-4" />
-              </button>
-
-              {/* Fullscreen */}
-              <button
-                onClick={toggleFullscreen}
-                title="Tela Cheia (F)"
-                className="p-2 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white transition-colors cursor-pointer"
-              >
-                {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-              </button>
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
+                <span className="text-sm font-medium text-white flex items-center gap-2">
+                  <FlipHorizontal className="w-4 h-4" /> Espelho Óptico (Vidro)
+                </span>
+                <button
+                  onClick={() => {
+                    triggerHaptic(15);
+                    setSettings((s) => ({ ...s, mirrorHorizontal: !s.mirrorHorizontal }));
+                  }}
+                  className={`ios-switch ${settings.mirrorHorizontal ? 'active' : ''}`}
+                >
+                  <div className="ios-switch-knob" />
+                </button>
+              </div>
             </div>
           </div>
         </div>
